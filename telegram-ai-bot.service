@@ -1,0 +1,51 @@
+[Unit]
+Description=Personal Telegram AI Assistant Bot
+Documentation=https://github.com/example/telegram-ai-assistant
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+Type=simple
+# Replace 'ubuntu' with the actual deployment user and group on your server
+User=ubuntu
+Group=ubuntu
+
+# Replace with the actual deployment directory on your Ubuntu server
+WorkingDirectory=/opt/telegram-ai-bot
+EnvironmentFile=/opt/telegram-ai-bot/.env
+
+# Execute the application using the UV-managed virtual environment
+ExecStart=/opt/telegram-ai-bot/.venv/bin/python main.py
+
+# Automatic restart configuration
+# Automatically restart when process crashes or exits unexpectedly
+Restart=on-failure
+RestartSec=5s
+# Stop restarting if it crashes 5 times within 60 seconds (prevents thrashing)
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+# Graceful termination handling: allow 15 seconds for bot & MongoDB connections to close
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+SendSIGKILL=yes
+
+# Sandboxing and security hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+# Standard systemd logging into systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-ai-bot
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
