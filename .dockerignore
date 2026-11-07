@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Virtual environment and local packages
+.venv/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# IDE and OS artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Test suites and service files
+tests/
+telegram-ai-bot.service
+
+# Docker host assets
+docker/nginx/ssl/*.crt
+docker/nginx/ssl/*.key
+docker/nginx/ssl/*.pem
+

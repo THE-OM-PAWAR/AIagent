@@ -28,10 +28,18 @@ ENV/
 
 # Environment Variables & Secrets
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 *.pem
 *.key
+*.crt
+*.csr
+
+# SSL Certificates in Docker directory
+docker/nginx/ssl/*.pem
+docker/nginx/ssl/*.key
+docker/nginx/ssl/*.crt
+docker/nginx/ssl/*.csr
 
 # IDE & Editors
 .idea/
@@ -39,6 +47,7 @@ ENV/
 *.swp
 *.swo
 *~
+.DS_Store
 
 # Logs
 *.log
@@ -48,4 +57,3 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
-

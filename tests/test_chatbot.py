@@ -465,5 +465,32 @@ class TestMessageUtilities(unittest.TestCase):
         self.assertIn("Paragraph 3", rejoined)
 
 
+class TestDockerInfrastructure(unittest.TestCase):
+    """Test Docker and Docker Compose configuration integrity."""
+
+    def test_dockerfile_contains_non_root_user_and_stopposition(self) -> None:
+        dockerfile_path = os.path.join(os.path.dirname(__file__), "..", "Dockerfile")
+        self.assertTrue(os.path.exists(dockerfile_path))
+        with open(dockerfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("USER appuser", content)
+        self.assertIn("STOPSIGNAL SIGTERM", content)
+        self.assertIn("python:3.12-slim", content)
+
+    def test_compose_structure(self) -> None:
+        compose_path = os.path.join(os.path.dirname(__file__), "..", "docker-compose.yml")
+        self.assertTrue(os.path.exists(compose_path))
+        with open(compose_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("name: aiagent", content)
+        self.assertIn("aiagent-app", content)
+        self.assertIn("aiagent-mongo", content)
+        self.assertIn("aiagent-nginx", content)
+        self.assertIn("aiagent-network", content)
+        # Verify MongoDB ports are NOT published to the host
+        self.assertNotIn('"27017:27017"', content)
+        self.assertNotIn("27017:27017", content)
+
+
 if __name__ == "__main__":
     unittest.main()

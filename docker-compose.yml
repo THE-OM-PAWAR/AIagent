@@ -1,0 +1,104 @@
+# Production Docker Compose Orchestration for AIagent
+name: aiagent
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # 1. MongoDB Database Service (Isolated internally, persistent storage)
+  mongo:
+    image: mongo:7.0
+    container_name: aiagent-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?MongoDB root password is required}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB_NAME:-telegram_ai_bot}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:-aiagent_user}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-aiagent_password}
+    volumes:
+      - mongo_data:/data/db
+      - ./docker/mongo/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - aiagent-network
+    # Ports are NOT mapped to the host, keeping database access strictly internal
+    expose:
+      - "27017"
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --eval 'db.adminCommand(\"ping\")' --quiet || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *default-logging
+
+  # 2. Python Telegram Assistant Application Service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aiagent-app
+    restart: unless-stopped
+    stop_grace_period: 15s
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Telegram bot token is required}
+      ALLOWED_TELEGRAM_USER_IDS: ${ALLOWED_TELEGRAM_USER_IDS:?Allowed Telegram user IDs are required}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?Gemini API key is required}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_SYSTEM_INSTRUCTION: ${GEMINI_SYSTEM_INSTRUCTION:-You are a helpful, respectful, and concise personal AI assistant.}
+      GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-60.0}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://aiagent_user:aiagent_password@mongo:27017/telegram_ai_bot?authSource=telegram_ai_bot}
+      MONGODB_DB_NAME: ${MONGODB_DB_NAME:-telegram_ai_bot}
+      CONVERSATION_HISTORY_LIMIT: ${CONVERSATION_HISTORY_LIMIT:-20}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+    networks:
+      - aiagent-network
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.healthcheck", "--skip-telegram"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  # 3. Nginx Reverse Proxy & TLS Gateway Service
+  nginx:
+    image: nginx:alpine
+    container_name: aiagent-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT_HTTP:-80}:80"
+      - "${NGINX_PORT_HTTPS:-443}:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+      - certbot_www:/var/www/certbot:ro
+    networks:
+      - aiagent-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:80/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging: *default-logging
+
+networks:
+  aiagent-network:
+    name: aiagent-network
+    driver: bridge
+
+volumes:
+  mongo_data:
+    name: aiagent_mongo_data
+  certbot_www:
+    name: aiagent_certbot_www
+

@@ -48,15 +48,28 @@ async def main() -> None:
         logger.error("Failed initializing Gemini service: %s", exc, exc_info=True)
         sys.exit(1)
 
-    try:
-        await db_client.connect()
-    except Exception as exc:
-        logger.error(
-            "Failed connecting to MongoDB at %s: %s",
-            db_client.masked_uri,
-            exc,
-        )
-        sys.exit(1)
+    # 3. Connect to MongoDB with retry backoff for containerized environments
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            await db_client.connect()
+            break
+        except Exception as exc:
+            if attempt == max_retries:
+                logger.error(
+                    "Failed connecting to MongoDB at %s after %d attempts: %s",
+                    db_client.masked_uri,
+                    max_retries,
+                    exc,
+                )
+                sys.exit(1)
+            logger.warning(
+                "MongoDB connection attempt %d/%d failed (%s). Retrying in 2 seconds...",
+                attempt,
+                max_retries,
+                exc,
+            )
+            await asyncio.sleep(2)
 
     # 4. Build Telegram bot application with Gemini and DB injection
     bot_app = create_bot_app(config, gemini_client, db_client)

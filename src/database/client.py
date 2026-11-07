@@ -46,8 +46,8 @@ class DatabaseClient:
         self._db = self._client[self.db_name]
 
         try:
-            # Verify connectivity using ping command
-            await self._client.admin.command("ping")
+            # Verify connectivity using ping command on application database
+            await self._db.command("ping")
             logger.info("Connected to MongoDB successfully.")
 
             # Ensure collection indexes
