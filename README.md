@@ -95,6 +95,10 @@ docker compose logs -f nginx
 
 ### Update Application
 ```bash
+# Automated deployment / rollout
+./scripts/deploy.sh
+
+# Or manual update
 git pull
 docker compose build app
 docker compose up -d --no-deps app
@@ -148,6 +152,39 @@ docker compose exec -T mongo mongorestore \
 - **Telegram Access Control**: Enforced by `ALLOWED_TELEGRAM_USER_IDS`. Unauthorized users receive `⛔ Access denied`.
 - **TLS Certificates**: Mount production certificates (e.g., from Certbot) into `./docker/nginx/ssl/cert.pem` and `./docker/nginx/ssl/key.pem`.
   - Self-signed helper: `docker/nginx/ssl/generate-self-signed.sh`
+
+---
+
+## 🚀 CI/CD & GHCR Integration
+
+For continuous delivery using GitHub Container Registry (`ghcr.io`):
+
+1. **Tag & Build Image**:
+   ```bash
+   docker build -t ghcr.io/<owner>/aiagent:latest .
+   docker push ghcr.io/<owner>/aiagent:latest
+   ```
+2. **Deploy on Server**: Set `AIAGENT_IMAGE=ghcr.io/<owner>/aiagent` and `IMAGE_TAG=latest` in `.env`, then run `./scripts/deploy.sh`.
+3. **Required GitHub Secrets** (for future automated GitHub Actions workflows):
+   | Secret | Description |
+   |---|---|
+   | `GHCR_TOKEN` | Personal Access Token (PAT) with `read:packages` / `write:packages` scope |
+   | `SSH_HOST` | Ubuntu server public IP or domain |
+   | `SSH_USER` | Deploy user (e.g. `ubuntu` or `deploy`) |
+   | `SSH_KEY` | SSH private key for server authentication |
+   | `ENV_FILE_CONTENT` | Production `.env` secrets content |
+
+---
+
+## 🔧 Troubleshooting
+
+| Issue | Likely Cause | Solution |
+|---|---|---|
+| `InvalidToken` error | Incorrect `TELEGRAM_BOT_TOKEN` | Verify token with `@BotFather` and update `.env` |
+| App cannot reach MongoDB | Bad credentials or network issue | Check `MONGODB_URI` matches `MONGO_APP_USERNAME` / `PASSWORD` |
+| `Permission denied` in volume | Host filesystem permission mismatch | Named volume `aiagent_mongo_data` manages UID internally |
+| Port 80/443 conflict | Apache or another proxy running | Stop conflicting service (`systemctl stop apache2`) |
+| Bot not responding | User ID not in allowed list | Check `ALLOWED_TELEGRAM_USER_IDS` in `.env` against `@userinfobot` |
 
 ---
 

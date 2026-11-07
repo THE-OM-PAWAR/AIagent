@@ -37,6 +37,7 @@ services:
 
   # 2. Python Telegram Assistant Application Service
   app:
+    image: ${AIAGENT_IMAGE:-aiagent-app}:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
