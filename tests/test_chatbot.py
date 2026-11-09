@@ -485,8 +485,10 @@ class TestDockerInfrastructure(unittest.TestCase):
         self.assertIn("name: aiagent", content)
         self.assertIn("aiagent-app", content)
         self.assertIn("aiagent-mongo", content)
-        self.assertIn("aiagent-nginx", content)
         self.assertIn("aiagent-network", content)
+        # Verify Nginx and Certbot are removed (long polling bot needs no public HTTP ingress)
+        self.assertNotIn("aiagent-nginx", content)
+        self.assertNotIn("certbot", content)
         # Verify MongoDB ports are NOT published to the host
         self.assertNotIn('"27017:27017"', content)
         self.assertNotIn("27017:27017", content)

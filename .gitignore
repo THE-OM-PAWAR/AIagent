@@ -35,12 +35,6 @@ ENV/
 *.crt
 *.csr
 
-# SSL Certificates in Docker directory
-docker/nginx/ssl/*.pem
-docker/nginx/ssl/*.key
-docker/nginx/ssl/*.crt
-docker/nginx/ssl/*.csr
-
 # IDE & Editors
 .idea/
 .vscode/

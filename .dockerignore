@@ -38,8 +38,3 @@ logs/
 tests/
 telegram-ai-bot.service
 
-# Docker host assets
-docker/nginx/ssl/*.crt
-docker/nginx/ssl/*.key
-docker/nginx/ssl/*.pem
-

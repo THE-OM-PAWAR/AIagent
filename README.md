@@ -1,29 +1,26 @@
 # AIagent - Production Telegram AI Assistant
 
-Production-oriented personal Telegram AI assistant powered by Google Gemini and persistent MongoDB, containerized with Docker Compose and Nginx reverse proxy.
+Production-oriented personal Telegram AI assistant powered by Google Gemini and persistent MongoDB, containerized with Docker Compose.
 
 ---
 
 ## 🏗️ Architecture
 
 ```text
-               Internet
-                  │
-          ┌───────▼───────┐
-          │     Nginx     │  Ports 80 / 443 (HTTP/HTTPS, TLS, /healthz)
-          └───────┬───────┘
-                  │  (aiagent-network)
-      ┌───────────┴───────────┐
-      │                       │
-┌─────▼─────┐           ┌─────▼─────┐
-│  AIagent  │ Long-Poll │  MongoDB  │ Internal only (Port 27017)
-│    App    ├───────────►   (Auth)  │ Persistent Named Volume
-└───────────┘           └───────────┘
+               Telegram Cloud (Long Polling)
+                            │
+               ┌────────────▼───────────┐
+               │    AIagent App (Bot)   │ Slim Python 3.12 (Non-root appuser)
+               └────────────┬───────────┘
+                            │ (aiagent-network)
+               ┌────────────▼───────────┐
+               │    MongoDB Database    │ Internal only (Port 27017, Auth enabled)
+               │ (Persistent Named Vol) │ Named volume: aiagent_mongo_data
+               └────────────────────────┘
 ```
 
-- **App (`aiagent-app`)**: Slim Python 3.12 container running as a non-root user (`appuser`). Operates via long-polling (no public webhooks required).
+- **App (`aiagent-app`)**: Slim Python 3.12 container running as a non-root user (`appuser`). Operates via outbound Telegram long polling (no open ports or webhooks required).
 - **Database (`aiagent-mongo`)**: MongoDB 7.0 with authentication enabled, persistent volume, and ports isolated strictly inside the internal Docker network.
-- **Gateway (`aiagent-nginx`)**: Modular Nginx reverse proxy providing TLS termination foundation, ACME challenge location, and `/healthz`.
 - **Network (`aiagent-network`)**: Dedicated internal bridge network.
 
 ---
@@ -54,9 +51,6 @@ CONVERSATION_HISTORY_LIMIT=20
 # Internal network connection string used by app container
 MONGODB_URI=mongodb://aiagent_user:your_strong_app_password@mongo:27017/telegram_ai_bot?authSource=telegram_ai_bot
 
-# Nginx Gateway Ports
-NGINX_PORT_HTTP=80
-NGINX_PORT_HTTPS=443
 LOG_LEVEL=INFO
 ENVIRONMENT=production
 ```
@@ -70,9 +64,6 @@ docker compose up -d --build
 ```bash
 # Check container status
 docker compose ps
-
-# Check Nginx health endpoint
-curl -i http://localhost/healthz
 
 # Stream application logs
 docker compose logs -f app
@@ -90,7 +81,6 @@ docker compose logs -f
 # Specific container logs
 docker compose logs -f app
 docker compose logs -f mongo
-docker compose logs -f nginx
 ```
 
 ### Update Application
@@ -145,13 +135,12 @@ docker compose exec -T mongo mongorestore \
 
 ---
 
-## 🔒 Security & TLS Certificates
+## 🔒 Security
 
 - **MongoDB Isolation**: MongoDB port `27017` is **never published** to the host machine.
 - **Non-Root User**: App container runs as `appuser:appgroup` (UID `10001`).
 - **Telegram Access Control**: Enforced by `ALLOWED_TELEGRAM_USER_IDS`. Unauthorized users receive `⛔ Access denied`.
-- **TLS Certificates**: Mount production certificates (e.g., from Certbot) into `./docker/nginx/ssl/cert.pem` and `./docker/nginx/ssl/key.pem`.
-  - Self-signed helper: `docker/nginx/ssl/generate-self-signed.sh`
+- **Zero Exposed Ingress Ports**: Long polling model eliminates incoming attack surface.
 
 ---
 
@@ -183,7 +172,6 @@ For continuous delivery using GitHub Container Registry (`ghcr.io`):
 | `InvalidToken` error | Incorrect `TELEGRAM_BOT_TOKEN` | Verify token with `@BotFather` and update `.env` |
 | App cannot reach MongoDB | Bad credentials or network issue | Check `MONGODB_URI` matches `MONGO_APP_USERNAME` / `PASSWORD` |
 | `Permission denied` in volume | Host filesystem permission mismatch | Named volume `aiagent_mongo_data` manages UID internally |
-| Port 80/443 conflict | Apache or another proxy running | Stop conflicting service (`systemctl stop apache2`) |
 | Bot not responding | User ID not in allowed list | Check `ALLOWED_TELEGRAM_USER_IDS` in `.env` against `@userinfobot` |
 
 ---

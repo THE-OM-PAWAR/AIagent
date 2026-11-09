@@ -38,27 +38,43 @@ docker compose up -d --remove-orphans
 
 # 5. Verify deployment health
 echo "==> Waiting for services to reach healthy status..."
-MAX_ATTEMPTS=12
+MAX_ATTEMPTS=24
 ATTEMPT=1
 DEPLOY_HEALTHY=false
 
+EXPECTED_SERVICES=$(docker compose config --services)
+
 while [[ ${ATTEMPT} -le ${MAX_ATTEMPTS} ]]; do
-    UNHEALTHY=$(docker compose ps --format '{{.Service}}: {{.Health}}' | grep -v 'healthy' | grep -v '^$' || true)
-    if [[ -z "${UNHEALTHY}" ]]; then
+    ALL_HEALTHY=true
+    for svc in ${EXPECTED_SERVICES}; do
+        HEALTH=$(docker compose ps "${svc}" --format '{{.Health}}' 2>/dev/null || true)
+        STATE=$(docker compose ps "${svc}" --format '{{.State}}' 2>/dev/null || true)
+
+        if [[ "${STATE}" != "running" || "${HEALTH}" != "healthy" ]]; then
+            ALL_HEALTHY=false
+            break
+        fi
+    done
+
+    if [[ "${ALL_HEALTHY}" = true ]]; then
         DEPLOY_HEALTHY=true
         break
     fi
+
     echo "Attempt ${ATTEMPT}/${MAX_ATTEMPTS}: waiting for services to become healthy..."
     sleep 5
     ((ATTEMPT++))
 done
 
 if [[ "${DEPLOY_HEALTHY}" = true ]]; then
-    echo "==> All services are healthy!"
+    echo "==> All required services are healthy!"
     docker compose ps
 else
-    echo "WARNING: Some services have not reported healthy within timeout:"
-    docker compose ps
+    echo "ERROR: Deployment failed. One or more services failed health checks:" >&2
+    docker compose ps >&2
+    echo "==> Recent container logs:" >&2
+    docker compose logs --tail=40 >&2
+    exit 1
 fi
 
 # 6. Clean dangling images
