@@ -13,6 +13,19 @@ DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_HISTORY_LIMIT = 20
 
 
+def normalize_async_db_url(url: str) -> str:
+    """Normalize PostgreSQL / Neon URL for asyncpg and SQLAlchemy."""
+    url = url.strip()
+    if url.startswith("postgres://"):
+        url = "postgresql+asyncpg://" + url[len("postgres://") :]
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+        url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+    # asyncpg expects 'ssl=require' instead of 'sslmode=require'
+    if "sslmode=require" in url:
+        url = url.replace("sslmode=require", "ssl=require")
+    return url
+
+
 class ConfigError(Exception):
     """Raised when environment variables are missing or invalid."""
     pass
@@ -33,6 +46,17 @@ class Config:
     conversation_history_limit: int
     log_level: str
     environment: str
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/aiagent"
+    qdrant_url: str = ":memory:"
+    qdrant_api_key: str | None = None
+    qdrant_collection_name: str = "aiagent_memories"
+    embedding_model: str = "text-embedding-004"
+    embedding_dimension: int = 768
+    memory_top_k: int = 5
+    memory_similarity_threshold: float = 0.65
+    model_tier_small: str = "gemini-2.5-flash"
+    model_tier_medium: str = "gemini-2.5-flash"
+    model_tier_large: str = "gemini-1.5-pro"
 
     @classmethod
     def load(cls, env_file: str | Path | None = None) -> "Config":
@@ -127,6 +151,36 @@ class Config:
 
         environment = os.getenv("ENVIRONMENT", "production").strip().lower()
 
+        raw_db_url = os.getenv(
+            "DATABASE_URL",
+            os.getenv("POSTGRES_URI", "postgresql+asyncpg://postgres:postgres@localhost:5432/aiagent"),
+        ).strip()
+        database_url = normalize_async_db_url(raw_db_url)
+
+        qdrant_url = os.getenv("QDRANT_URL", ":memory:").strip()
+        qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip() or None
+        qdrant_collection_name = os.getenv("QDRANT_COLLECTION_NAME", "aiagent_memories").strip()
+        embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-004").strip()
+
+        try:
+            embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "768"))
+        except ValueError:
+            embedding_dimension = 768
+
+        try:
+            memory_top_k = int(os.getenv("MEMORY_TOP_K", "5"))
+        except ValueError:
+            memory_top_k = 5
+
+        try:
+            memory_similarity_threshold = float(os.getenv("MEMORY_SIMILARITY_THRESHOLD", "0.65"))
+        except ValueError:
+            memory_similarity_threshold = 0.65
+
+        model_tier_small = os.getenv("MODEL_TIER_SMALL", "gemini-2.5-flash").strip()
+        model_tier_medium = os.getenv("MODEL_TIER_MEDIUM", gemini_model).strip()
+        model_tier_large = os.getenv("MODEL_TIER_LARGE", "gemini-1.5-pro").strip()
+
         if errors:
             formatted_errors = "\n  - " + "\n  - ".join(errors)
             raise ConfigError(f"Configuration validation failed:{formatted_errors}")
@@ -143,4 +197,15 @@ class Config:
             conversation_history_limit=conversation_history_limit,
             log_level=log_level,
             environment=environment,
+            database_url=database_url,
+            qdrant_url=qdrant_url,
+            qdrant_api_key=qdrant_api_key,
+            qdrant_collection_name=qdrant_collection_name,
+            embedding_model=embedding_model,
+            embedding_dimension=embedding_dimension,
+            memory_top_k=memory_top_k,
+            memory_similarity_threshold=memory_similarity_threshold,
+            model_tier_small=model_tier_small,
+            model_tier_medium=model_tier_medium,
+            model_tier_large=model_tier_large,
         )

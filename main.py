@@ -5,6 +5,7 @@ import signal
 import sys
 
 from src.config import Config, ConfigError
+from src.core.orchestrator import AgentOrchestrator
 from src.database import DatabaseClient
 from src.intelligence.providers.gemini import GeminiClient
 from src.interfaces.telegram import create_bot_app, start_bot, stop_bot
@@ -71,8 +72,51 @@ async def main() -> None:
             )
             await asyncio.sleep(2)
 
-    # 4. Build Telegram bot application with Gemini and DB injection
-    bot_app = create_bot_app(config, gemini_client, db_client)
+    # 4. Initialize Phase 1 Memory Manager (if available)
+    memory_manager = None
+    if getattr(config, "database_url", None):
+        try:
+            from src.memory.embeddings.provider import EmbeddingProvider
+            from src.memory.manager import MemoryManager
+            from src.memory.storage.qdrant import QdrantStorage
+
+            embedding_provider = EmbeddingProvider(
+                api_key=config.gemini_api_key,
+                model_name=config.embedding_model,
+                dimension=config.embedding_dimension,
+            )
+            qdrant_storage = QdrantStorage(
+                url=config.qdrant_url,
+                api_key=config.qdrant_api_key,
+                collection_name=config.qdrant_collection_name,
+                vector_dimension=config.embedding_dimension,
+            )
+            memory_manager = MemoryManager(
+                database_url=config.database_url,
+                qdrant_storage=qdrant_storage,
+                embedding_provider=embedding_provider,
+                default_top_k=config.memory_top_k,
+                default_similarity_threshold=config.memory_similarity_threshold,
+            )
+            await memory_manager.initialize()
+            logger.info("MemoryManager initialized successfully for RAG.")
+        except Exception as exc:
+            logger.warning("MemoryManager initialization skipped (%s). Continuing in standard mode.", exc)
+            memory_manager = None
+
+    # 5. Initialize Agent Orchestration Layer
+    orchestrator = AgentOrchestrator(
+        gemini_client=gemini_client,
+        database_url=getattr(config, "database_url", None),
+        memory_manager=memory_manager,
+        db_client=db_client,
+        context_limit=config.conversation_history_limit,
+        system_prompt=config.gemini_system_instruction,
+        model_name=config.gemini_model,
+    )
+
+    # 6. Build Telegram bot application with orchestrator injection
+    bot_app = create_bot_app(config, gemini_client, db_client, orchestrator=orchestrator)
 
     # 5. Setup graceful shutdown handling
     stop_event = asyncio.Event()

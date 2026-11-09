@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 
 from src.config import Config
+from src.core.orchestrator import AgentOrchestrator
 from src.database import DatabaseClient
 from src.intelligence.providers.gemini import (
     GeminiAPIError,
@@ -249,16 +250,20 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     logger.info("Handling /clear from user_id=%s", user.id)
-    db_client: DatabaseClient | None = context.bot_data.get("db_client")
-    if db_client:
-        try:
-            await db_client.clear_active_conversation(user.id)
-        except Exception as exc:
-            logger.error("Error clearing active conversation for user %s: %s", user.id, exc)
+    orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
+    if orchestrator:
+        await orchestrator.clear_conversation(user.id)
+    else:
+        db_client: DatabaseClient | None = context.bot_data.get("db_client")
+        if db_client:
+            try:
+                await db_client.clear_active_conversation(user.id)
+            except Exception as exc:
+                logger.error("Error clearing active conversation for user %s: %s", user.id, exc)
 
-    gemini_client: GeminiClient | None = context.bot_data.get("gemini_client")
-    if gemini_client:
-        gemini_client.reset_chat(user.id)
+        gemini_client: GeminiClient | None = context.bot_data.get("gemini_client")
+        if gemini_client:
+            gemini_client.reset_chat(user.id)
 
     if update.message:
         await update.message.reply_text(
@@ -420,40 +425,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not user_text:
         return
 
-    gemini_client: GeminiClient | None = context.bot_data.get("gemini_client")
-    if not gemini_client:
-        logger.error("GeminiClient instance not found in context.bot_data.")
-        await message.reply_text("⚠️ AI service is temporarily unavailable. Please try again later.")
-        return
+    # 3. Resolve or initialize Agent Orchestrator
+    orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
+    if not orchestrator:
+        gemini_client: GeminiClient | None = context.bot_data.get("gemini_client")
+        if not gemini_client:
+            logger.error("Neither orchestrator nor GeminiClient found in context.bot_data.")
+            await message.reply_text("⚠️ AI service is temporarily unavailable. Please try again later.")
+            return
 
-    db_client: DatabaseClient | None = context.bot_data.get("db_client")
-    config: Config | None = context.bot_data.get("config")
-    history_limit = config.conversation_history_limit if config else 20
+        db_client: DatabaseClient | None = context.bot_data.get("db_client")
+        config: Config | None = context.bot_data.get("config")
+        history_limit = config.conversation_history_limit if config else 20
 
-    conversation_id: str | None = None
-    recent_history: list[dict[str, str]] | None = None
-
-    # Retrieve active conversation and history from MongoDB
-    if db_client:
-        try:
-            conv = await db_client.get_or_create_active_conversation(user.id)
-            conversation_id = conv["conversation_id"]
-            recent_history = await db_client.get_recent_messages(
-                conversation_id=conversation_id,
-                limit=history_limit,
-            )
-            logger.debug(
-                "Retrieved %d history messages for user %s in conversation %s",
-                len(recent_history),
-                user.id,
-                conversation_id,
-            )
-        except Exception as exc:
-            logger.error("Database error retrieving history for user %s: %s", user.id, exc)
+        orchestrator = AgentOrchestrator(
+            gemini_client=gemini_client,
+            db_client=db_client,
+            context_limit=history_limit,
+        )
+        context.bot_data["orchestrator"] = orchestrator
 
     # Log sanitized message metadata without logging sensitive text content
     logger.info(
-        "Processing message from user_id=%s (length=%d, msg_id=%s, chat_id=%s)",
+        "Telegram: receiving message from user_id=%s (length=%d, msg_id=%s, chat_id=%s)",
         user.id,
         len(user_text),
         message.message_id,
@@ -461,25 +455,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
     try:
-        # Show typing indicator while awaiting Gemini response
+        # Show typing indicator while orchestrating response
         async with send_typing_action(context.bot, chat.id):
-            response_text = await gemini_client.generate_response(
+            response_text = await orchestrator.process_message(
                 user_id=user.id,
-                message_text=user_text,
-                history=recent_history,
+                user_text=user_text,
+                update_id=update.update_id,
             )
-
-        # Persist the turn to MongoDB
-        if db_client and conversation_id:
-            try:
-                await db_client.save_turn(
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    user_message=user_text,
-                    model_response=response_text,
-                )
-            except Exception as exc:
-                logger.error("Database error persisting turn for user %s: %s", user.id, exc)
 
         # Split and deliver response chunks complying with Telegram message length limits
         chunks = split_message(response_text)

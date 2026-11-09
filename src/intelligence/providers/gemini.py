@@ -106,6 +106,7 @@ class GeminiClient:
         user_id: int,
         message_text: str,
         history: list[dict[str, Any]] | None = None,
+        system_instruction: str | None = None,
     ) -> str:
         """Send a user message to Gemini within their conversational context.
 
@@ -113,6 +114,7 @@ class GeminiClient:
             user_id: Telegram user ID.
             message_text: The user's input text.
             history: Optional list of previous message dictionaries with 'role' and 'content'.
+            system_instruction: Optional dynamic system instruction override with RAG context.
 
         Returns:
             Generated response string from Gemini.
@@ -123,6 +125,8 @@ class GeminiClient:
             GeminiAPIError: If the API returns an error or empty content.
             GeminiError: On unexpected exceptions.
         """
+        effective_instruction = system_instruction or self._system_instruction
+
         if history is not None:
             # Build conversation history from persisted records
             history_contents: list[types.Content] = []
@@ -144,7 +148,7 @@ class GeminiClient:
                     )
 
             config = types.GenerateContentConfig(
-                system_instruction=self._system_instruction,
+                system_instruction=effective_instruction,
             )
             chat = self.client.aio.chats.create(
                 model=self._model,

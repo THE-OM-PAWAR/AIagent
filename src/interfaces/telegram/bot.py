@@ -6,6 +6,7 @@ from telegram.ext import Application, ApplicationBuilder
 from telegram.request import HTTPXRequest
 
 from src.config import Config
+from src.core.orchestrator import AgentOrchestrator
 from src.database import DatabaseClient
 from src.intelligence.providers.gemini import GeminiClient
 from src.interfaces.telegram.handlers import register_handlers
@@ -17,6 +18,7 @@ def create_bot_app(
     config: Config,
     gemini_client: GeminiClient,
     db_client: DatabaseClient,
+    orchestrator: AgentOrchestrator | None = None,
 ) -> Application:
     """Build and configure the Telegram bot Application with timeouts and dependencies.
 
@@ -24,6 +26,7 @@ def create_bot_app(
         config: Application configuration instance.
         gemini_client: Initialized GeminiClient instance.
         db_client: Initialized DatabaseClient instance.
+        orchestrator: Optional AgentOrchestrator instance.
 
     Returns:
         Configured telegram.ext.Application ready for execution.
@@ -38,10 +41,18 @@ def create_bot_app(
         write_timeout=30.0,
     )
 
+    if orchestrator is None:
+        orchestrator = AgentOrchestrator(
+            gemini_client=gemini_client,
+            db_client=db_client,
+            context_limit=config.conversation_history_limit,
+        )
+
     app = ApplicationBuilder().token(config.telegram_bot_token).request(request).build()
     app.bot_data["config"] = config
     app.bot_data["gemini_client"] = gemini_client
     app.bot_data["db_client"] = db_client
+    app.bot_data["orchestrator"] = orchestrator
     app.bot_data["start_time"] = time.time()
     register_handlers(app)
     return app

@@ -187,9 +187,121 @@ For continuous delivery using GitHub Container Registry (`ghcr.io`):
 
 ---
 
+## 🧠 Memory Foundation & RAG Pipeline (Phase 1)
+
+AIagent features a production-grade, hybrid memory system combining **Neon PostgreSQL** (authoritative relational storage and full-text search) and **Qdrant** (dense vector search):
+
+### 1. Memory Architecture
+- **5 Memory Categories**: `semantic` (facts/preferences), `episodic` (events/decisions), `project` (architecture/code), `task` (goals/blockers), `working` (ephemeral context).
+- **Ingestion Pipeline**: Deduplication, conflict detection, provenance tracking, importance/confidence scoring.
+- **Transactional Outbox**: Ensures reliable PostgreSQL-to-Qdrant synchronization without dual-write inconsistencies.
+- **Hybrid RAG Retrieval**: Dense vector search + PostgreSQL full-text search fused with **Reciprocal Rank Fusion (RRF)** and multi-factor reranking.
+- **User-Level Isolation**: All vector and keyword queries are strictly filtered by `user_id`.
+
+### 2. Database Migrations (Alembic)
+Run database migrations on PostgreSQL:
+```bash
+# Apply migrations
+alembic upgrade head
+
+# Generate SQL without applying
+alembic upgrade head --sql
+```
+
+### 3. Safe MongoDB Migration
+Migrate historical conversations and extract memories from MongoDB without data loss:
+```bash
+uv run python -c "
+import asyncio
+from src.database.mongo_migrator import MongoPostgresMigrator
+from src.config import Config
+cfg = Config.load()
+migrator = MongoPostgresMigrator(
+    mongodb_uri=cfg.mongodb_uri,
+    mongodb_db_name=cfg.mongodb_db_name,
+    postgres_url=cfg.database_url,
+)
+asyncio.run(migrator.run_migration(extract_memories=True))
+"
+```
+
+---
+
+## ⚡ Intelligent Context Engine (Phase 2)
+
+AIagent features a modular, multi-source context construction system under `src/agent/context/`:
+
+- **4 Context Sources**:
+  1. Chronological conversation history (from PostgreSQL / in-memory sessions).
+  2. Semantic & episodic memories (from Phase 1 hybrid RAG).
+  3. Project context and architectural decisions.
+  4. Active tasks & working state.
+- **Intelligent Selector & Deduplication**:
+  - Eliminates near-duplicate facts using token-level Jaccard similarity.
+  - Suppresses memories redundant with recent conversation history turns.
+  - Strict user and project isolation preventing cross-tenant leakage.
+- **Multi-Factor Ranking & Decision Protection**:
+  - Scores context items using relevance, importance, confidence, exponential recency decay, and project match.
+  - Detects architectural decisions and user constraints, flagging them with `is_protected=True` so they survive budget pruning.
+- **Model-Specific Token Budgeting**:
+  - Accurate token counting via `tiktoken` BPE with calibrated fallback.
+  - Dedicated budgets and response reservation buffers for Gemini 2.5 Flash, Gemini 1.5 Pro, GPT-4o, Claude 3.5 Sonnet, etc.
+- **Lightweight Versioned Summarizer**:
+  - Automatically summarizes long threads preserving key decisions, open questions, task state, and constraints.
+  - Treats summaries as derived information with full provenance without touching raw message turns.
+
+---
+
+## 🎯 Intelligence Orchestrator (Phase 3)
+
+The central request-processing orchestrator in `src/agent/orchestrator.py` connects the Telegram interface, Neon PostgreSQL, Phase 1 Memory RAG, Phase 2 Context Engine, and Google Gemini:
+
+- **12-Step Complete Request Lifecycle**:
+  1. Telegram message reception with `update_id` deduplication.
+  2. User authentication & identification with log masking.
+  3. Unique execution tracking (`exec_<uuid12>`).
+  4. Active conversation resolution & history retrieval (PostgreSQL / MongoDB).
+  5. Hybrid RAG memory retrieval across semantic, episodic, project, and task domains.
+  6. Context selection, token budgeting, and summarization.
+  7. Prompt assembly with injected memory facts & system instruction.
+  8. Gemini invocation with retry, timeout, and rate-limit handling.
+  9. Response validation (empty/malformed response protection).
+  10. Atomically persisting message turns in database.
+  11. Non-blocking background memory extraction & transactional sync.
+  12. Execution completion tracking and latency metric recording.
+- **Reliability & Concurrency**:
+  - `ConversationLockManager`: Per-user/conversation async locks prevent race conditions and state corruption.
+  - `UpdateDeduplicator`: Suppresses duplicate Telegram delivery attempts.
+  - Failure Shielding: Failed memory extraction never loses a successfully delivered user response.
+  - Safe Fallbacks: Gracefully degrades when database or RAG components are unavailable.
+
+---
+
+## 🤖 Multi-Agent Architecture & Model Routing (Phase 4)
+
+AIagent features three specialized logical agents and multi-tier model routing under `src/agents/` and `src/llm/`:
+
+- **3 Specialized Agents Sharing Infrastructure**:
+  1. **General Assistant (`general`)**: Everyday conversations, personal assistance, and natural context-aware dialog.
+  2. **Analyst Agent (`analyst`)**: Deep technical research, architectural tradeoffs, comparative evaluations, and risk assessments.
+  3. **Executor Agent (`executor`)**: Task decomposition, actionable step planning, status tagging (`[TODO]`, `[IN_PROGRESS]`, `[COMPLETED]`, `[BLOCKED]`), and automatic persistence of task memories.
+- **Shared Infrastructure**:
+  - All agents share Neon PostgreSQL, Qdrant vector retrieval, the Phase 1 Memory Manager, and the Phase 2 Context Engine.
+- **Intelligent Intent & Role Router (`src/agent/router.py`)**:
+  - Deterministic intent classification with regex pattern rules and heuristic ambiguity scoring.
+  - Safe fallback to General Assistant; avoids unnecessary agent-switching and loops.
+- **Model Tiers & Provider Fallback (`src/llm/`)**:
+  - **Small (`gemini-2.5-flash`)**: Quick turns, greetings, classification, and summarization.
+  - **Medium (`gemini-2.5-flash`)**: Standard conversation and everyday reasoning.
+  - **Large (`gemini-1.5-pro`)**: Complex analytical queries, tradeoffs, and deep planning.
+  - **Automatic Fallback**: If a Large tier model encounters rate limits or errors, `LLMManager` automatically falls back to Medium tier.
+  - **Telemetry & Cost Tracking**: Accurately tracks input/output tokens and estimated USD costs per request.
+
+---
+
 ## 🧪 Testing
 
-Run the full automated test suite (24 unit, integration, and infrastructure tests):
+Run the full automated test suite (75 unit, integration, infrastructure, memory RAG, context engine, orchestrator, and multi-agent tests):
 ```bash
 uv run python -m unittest discover -s tests -p "test_*.py" -v
 ```
