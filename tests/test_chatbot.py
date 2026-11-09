@@ -19,13 +19,15 @@ from src.gemini import (
 from src.handlers.handlers import (
     DuplicateMessageFilter,
     clear_command,
-    help_command,
-    health_command,
     handle_message,
+    health_command,
+    help_command,
     is_authorized,
+    model_command,
     send_typing_action,
     split_message,
     start_command,
+    status_command,
 )
 from src.healthcheck import run_health_check
 
@@ -412,13 +414,62 @@ class TestTelegramHandlersWithAuth(unittest.IsolatedAsyncioTestCase):
         reply = self.message.reply_text.call_args[0][0]
         self.assertIn("Access denied", reply)
 
+    async def test_status_command(self) -> None:
+        # Authorized
+        self.context.bot_data["start_time"] = 1000.0
+        with patch("time.time", return_value=1125.0):
+            await status_command(self.update, self.context)
+        self.message.reply_text.assert_awaited_once()
+        reply = self.message.reply_text.call_args[0][0]
+        self.assertIn("AIagent System Status", reply)
+        self.assertIn("Running", reply)
+        self.assertIn("production", reply)
+        self.assertIn("2m 5s", reply)
+
+        # Unauthorized
+        self.update.effective_user = self.unauthorized_user
+        self.message.reply_text.reset_mock()
+        await status_command(self.update, self.context)
+        reply = self.message.reply_text.call_args[0][0]
+        self.assertIn("Access denied", reply)
+
     async def test_health_command(self) -> None:
+        # Authorized
         self.db_mock.db.command = AsyncMock(return_value={"ok": 1})
+        self.context.bot.get_me = AsyncMock(return_value=MagicMock(username="TestBot"))
         await health_command(self.update, self.context)
         self.message.reply_text.assert_awaited_once()
         reply = self.message.reply_text.call_args[0][0]
         self.assertIn("System Health Status", reply)
         self.assertIn("Operational", reply)
+        self.assertIn("MongoDB", reply)
+        self.assertIn("Telegram API", reply)
+
+        # Unauthorized
+        self.update.effective_user = self.unauthorized_user
+        self.message.reply_text.reset_mock()
+        await health_command(self.update, self.context)
+        reply = self.message.reply_text.call_args[0][0]
+        self.assertIn("Access denied", reply)
+
+    async def test_model_command(self) -> None:
+        # Authorized
+        self.config_mock.gemini_system_instruction = "Be concise and polite."
+        self.config_mock.gemini_timeout_seconds = 60.0
+        await model_command(self.update, self.context)
+        self.message.reply_text.assert_awaited_once()
+        reply = self.message.reply_text.call_args[0][0]
+        self.assertIn("AI Model Configuration", reply)
+        self.assertIn("Google Gemini", reply)
+        self.assertIn("gemini-2.5-flash", reply)
+        self.assertIn("Be concise and polite.", reply)
+
+        # Unauthorized
+        self.update.effective_user = self.unauthorized_user
+        self.message.reply_text.reset_mock()
+        await model_command(self.update, self.context)
+        reply = self.message.reply_text.call_args[0][0]
+        self.assertIn("Access denied", reply)
 
 
 class TestHealthCheckCLI(unittest.IsolatedAsyncioTestCase):

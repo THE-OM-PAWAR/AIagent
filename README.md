@@ -71,6 +71,17 @@ docker compose logs -f app
 
 ---
 
+## 🤖 Telegram Commands
+
+- `/start` - Start or reset conversational context
+- `/status` - Display agent operational state, uptime and current environment
+- `/health` - Check application, MongoDB latency, and Telegram API status
+- `/model` - Display active Gemini model, provider, timeout and context limit
+- `/clear` - Archive conversation history and start a fresh session (alias: `/reset`)
+- `/help` - Display list of available commands
+
+---
+
 ## 🛠️ Operational Commands
 
 ### View Logs (Auto-rotated 10MB x 3 files)

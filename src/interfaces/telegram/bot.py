@@ -1,6 +1,7 @@
 """Telegram bot application setup and lifecycle management."""
 
 import logging
+import time
 from telegram.ext import Application, ApplicationBuilder
 from telegram.request import HTTPXRequest
 
@@ -41,6 +42,7 @@ def create_bot_app(
     app.bot_data["config"] = config
     app.bot_data["gemini_client"] = gemini_client
     app.bot_data["db_client"] = db_client
+    app.bot_data["start_time"] = time.time()
     register_handlers(app)
     return app
 

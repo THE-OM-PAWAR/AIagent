@@ -225,9 +225,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "🤖 Personal AI Assistant Commands:\n\n"
         "• /start  - Restart the assistant and begin a clean conversation\n"
+        "• /status - Display agent running status, uptime and environment\n"
+        "• /health - Check application, MongoDB, and Telegram connectivity\n"
+        "• /model  - View current Gemini model and LLM provider\n"
         "• /clear  - Clear active conversation history and start fresh\n"
         "• /reset  - Alias for /clear\n"
-        "• /health - Check bot and database operational health\n"
         "• /help   - View this help message\n\n"
         "Just send any text message to receive an AI response."
     )
@@ -264,8 +266,51 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+def format_uptime(start_time: float | None) -> str:
+    """Format elapsed seconds since start_time into a concise human-readable string."""
+    if not start_time:
+        return "Unknown"
+    elapsed = max(0, int(time.time() - start_time))
+    days, rem = divmod(elapsed, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    parts: list[str] = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0 or days > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0 or hours > 0 or days > 0:
+        parts.append(f"{minutes}m")
+    parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /status command to display agent status, uptime and environment."""
+    if not is_authorized(update, context):
+        if update.message:
+            await update.message.reply_text("⛔ Access denied. You are not authorized to use this bot.")
+        return
+
+    logger.info("Handling /status command from user_id=%s", update.effective_user.id if update.effective_user else "unknown")
+    config: Config | None = context.bot_data.get("config")
+    start_time: float | None = context.bot_data.get("start_time")
+    uptime = format_uptime(start_time)
+    environment = config.environment if config else "production"
+
+    status_message = (
+        "📊 *AIagent System Status*\n\n"
+        "• *State:* 🟢 Running\n"
+        f"• *Uptime:* {uptime}\n"
+        f"• *Environment:* `{environment}`\n"
+        f"• *Log Level:* `{config.log_level if config else 'INFO'}`"
+    )
+    if update.message:
+        await update.message.reply_text(status_message, parse_mode="Markdown")
+
+
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /health command to report system status to authorized users."""
+    """Handle /health command to report application, database and Telegram connectivity."""
     if not is_authorized(update, context):
         if update.message:
             await update.message.reply_text("⛔ Access denied. You are not authorized to use this bot.")
@@ -283,24 +328,71 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             start_t = time.perf_counter()
             await db_client.db.command("ping")
             latency_ms = (time.perf_counter() - start_t) * 1000
-            mongo_status = f"Connected ({latency_ms:.1f}ms)"
+            mongo_status = f"🟢 Connected ({latency_ms:.1f}ms)"
         except Exception as exc:
-            mongo_status = f"Error: {exc.__class__.__name__}"
+            mongo_status = f"🔴 Error: {exc.__class__.__name__}"
+
+    # Telegram API connectivity check
+    telegram_status = "🔴 Unknown"
+    try:
+        if context.bot:
+            bot_user = await context.bot.get_me()
+            bot_handle = f" (@{bot_user.username})" if bot_user and bot_user.username else ""
+            telegram_status = f"🟢 Connected{bot_handle}"
+        else:
+            telegram_status = "🟢 Connected"
+    except Exception as exc:
+        telegram_status = f"🔴 Error: {exc.__class__.__name__}"
 
     model_name = config.gemini_model if config else "Unknown"
     allowed_count = len(config.allowed_telegram_user_ids) if config else 0
+    app_state = "🟢 Operational" if "🟢" in mongo_status else "⚠️ Degraded"
 
     status_report = (
         "🏥 *System Health Status*\n\n"
-        f"• *Status:* Operational\n"
+        f"• *Application:* {app_state}\n"
         f"• *MongoDB:* {mongo_status}\n"
+        f"• *Telegram API:* {telegram_status}\n"
+        f"• *Status:* Operational\n"
         f"• *Gemini Model:* `{model_name}`\n"
         f"• *Authorized Users:* {allowed_count}\n"
-        f"• *Log Level:* {config.log_level if config else 'INFO'}\n"
-        f"• *Environment:* {config.environment if config else 'production'}"
+        f"• *Environment:* `{config.environment if config else 'production'}`"
     )
     if update.message:
         await update.message.reply_text(status_report, parse_mode="Markdown")
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /model command to display configured Gemini model and provider details."""
+    if not is_authorized(update, context):
+        if update.message:
+            await update.message.reply_text("⛔ Access denied. You are not authorized to use this bot.")
+        return
+
+    logger.info("Handling /model command from user_id=%s", update.effective_user.id if update.effective_user else "unknown")
+    config: Config | None = context.bot_data.get("config")
+
+    model_name = config.gemini_model if config else "Unknown"
+    timeout = config.gemini_timeout_seconds if config else 60.0
+    history_limit = config.conversation_history_limit if config else 20
+    sys_instruction = config.gemini_system_instruction if config else "None configured"
+
+    # Truncate exceptionally long system instruction for clean Telegram display
+    if len(sys_instruction) > 250:
+        display_sys = sys_instruction[:247] + "..."
+    else:
+        display_sys = sys_instruction
+
+    model_message = (
+        "🧠 *AI Model Configuration*\n\n"
+        "• *Provider:* Google Gemini (Official GenAI SDK)\n"
+        f"• *Model:* `{model_name}`\n"
+        f"• *Request Timeout:* {timeout:.1f}s\n"
+        f"• *Context Window Limit:* {history_limit} messages\n\n"
+        f"📝 *System Instruction:*\n_{display_sys}_"
+    )
+    if update.message:
+        await update.message.reply_text(model_message, parse_mode="Markdown")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -428,9 +520,11 @@ def register_handlers(application: Application) -> None:
     """Register all command and message handlers to the Telegram application."""
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("health", health_command))
+    application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("reset", clear_command))
-    application.add_handler(CommandHandler("health", health_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
     logger.info("Telegram command and message handlers registered.")

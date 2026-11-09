@@ -8,10 +8,12 @@ from src.interfaces.telegram.handlers import (
     health_command,
     help_command,
     is_authorized,
+    model_command,
     register_handlers,
     send_typing_action,
     split_message,
     start_command,
+    status_command,
 )
 
 __all__ = [
@@ -22,8 +24,10 @@ __all__ = [
     "health_command",
     "help_command",
     "is_authorized",
+    "model_command",
     "register_handlers",
     "send_typing_action",
     "split_message",
     "start_command",
+    "status_command",
 ]
