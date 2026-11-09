@@ -1,6 +1,6 @@
-"""Google Gemini module package."""
+"""Google Gemini module package (re-exports from src.intelligence.providers.gemini)."""
 
-from src.gemini.client import (
+from src.intelligence.providers.gemini import (
     GeminiAPIError,
     GeminiClient,
     GeminiError,

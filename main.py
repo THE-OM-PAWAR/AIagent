@@ -4,10 +4,10 @@ import asyncio
 import signal
 import sys
 
-from src.bot import create_bot_app, start_bot, stop_bot
 from src.config import Config, ConfigError
 from src.database import DatabaseClient
-from src.gemini import GeminiClient
+from src.intelligence.providers.gemini import GeminiClient
+from src.interfaces.telegram import create_bot_app, start_bot, stop_bot
 from src.logger import get_logger, setup_logging
 
 logger = get_logger("app")
