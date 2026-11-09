@@ -23,6 +23,12 @@ def normalize_async_db_url(url: str) -> str:
     # asyncpg expects 'ssl=require' instead of 'sslmode=require'
     if "sslmode=require" in url:
         url = url.replace("sslmode=require", "ssl=require")
+    # Remove unsupported query parameters like channel_binding
+    if "channel_binding=" in url:
+        import re
+        url = re.sub(r"[?&]channel_binding=[^&]+", "", url)
+        if "?" not in url and "&" in url:
+            url = url.replace("&", "?", 1)
     return url
 
 

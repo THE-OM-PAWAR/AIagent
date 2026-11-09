@@ -123,3 +123,21 @@ class MongoPostgresMigrator:
 
         return stats
 
+
+if __name__ == "__main__":
+    import asyncio
+    from src.config import Config
+
+    async def main() -> None:
+        cfg = Config.load()
+        migrator = MongoPostgresMigrator(
+            mongodb_uri=cfg.mongodb_uri,
+            mongodb_db_name=cfg.mongodb_db_name,
+            postgres_url=cfg.database_url,
+        )
+        print("Starting MongoDB -> PostgreSQL data migration...")
+        result = await migrator.run_migration(extract_memories=False)
+        print("Migration Result:", result)
+
+    asyncio.run(main())
+

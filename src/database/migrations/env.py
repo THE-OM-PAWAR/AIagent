@@ -9,7 +9,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from src.config import Config
+from src.config import Config, normalize_async_db_url
 from src.database.models import Base
 
 # this is the Alembic Config object
@@ -25,13 +25,13 @@ target_metadata = Base.metadata
 def get_url() -> str:
     """Retrieve database URL from application config or environment."""
     url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URI")
-    if not url:
-        try:
-            app_cfg = Config.load()
-            url = app_cfg.database_url
-        except Exception:
-            url = "postgresql+asyncpg://postgres:postgres@localhost:5432/aiagent"
-    return url
+    if url:
+        return normalize_async_db_url(url)
+    try:
+        app_cfg = Config.load()
+        return app_cfg.database_url
+    except Exception:
+        return "postgresql+asyncpg://postgres:postgres@localhost:5432/aiagent"
 
 
 def run_migrations_offline() -> None:
