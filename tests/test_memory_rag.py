@@ -16,7 +16,6 @@ from src.database.models import (
     MemoryRelationshipModel,
     MessageModel,
 )
-from src.database.mongo_migrator import MongoPostgresMigrator
 from src.database.repositories.memory_repo import MemoryRepository
 from src.database.repositories.outbox_repo import OutboxRepository
 from src.database.repositories.relationship_repo import RelationshipRepository
@@ -506,11 +505,10 @@ class TestMemoryFoundationAndRAG(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(qdrant_results[0][0], mem.id)
 
     # --------------------------------------------------------------------------
-    # 12. Memory Relationships and MongoDB Migration
+    # 12. Memory Relationships
     # --------------------------------------------------------------------------
-    async def test_12_relationships_and_migration(self) -> None:
-        """Verify memory relationship links and safe MongoDB migration."""
-        # 1. Relationships
+    async def test_12_relationships(self) -> None:
+        """Verify memory relationship links."""
         async with self.sessionmaker() as session:
             repo = MemoryRepository(session)
             m1 = await repo.create_memory(1001, "project", "Project AIagent")
@@ -531,14 +529,6 @@ class TestMemoryFoundationAndRAG(unittest.IsolatedAsyncioTestCase):
             rels = await rel_mgr.get_relationships(session, 1001, m1.id)
             self.assertEqual(len(rels), 1)
             self.assertEqual(rels[0].relationship_type, "project_to_task")
-
-        # 2. MongoDB Migrator structure check
-        migrator = MongoPostgresMigrator(
-            mongodb_uri="mongodb://localhost:27017",
-            mongodb_db_name="test_db",
-            postgres_url="sqlite+aiosqlite:///:memory:",
-        )
-        self.assertIsNotNone(migrator)
 
 
 if __name__ == "__main__":

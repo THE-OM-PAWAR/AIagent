@@ -208,23 +208,6 @@ alembic upgrade head
 alembic upgrade head --sql
 ```
 
-### 3. Safe MongoDB Migration
-Migrate historical conversations and extract memories from MongoDB without data loss:
-```bash
-uv run python -c "
-import asyncio
-from src.database.mongo_migrator import MongoPostgresMigrator
-from src.config import Config
-cfg = Config.load()
-migrator = MongoPostgresMigrator(
-    mongodb_uri=cfg.mongodb_uri,
-    mongodb_db_name=cfg.mongodb_db_name,
-    postgres_url=cfg.database_url,
-)
-asyncio.run(migrator.run_migration(extract_memories=True))
-"
-```
-
 ---
 
 ## ⚡ Intelligent Context Engine (Phase 2)
