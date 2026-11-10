@@ -23,7 +23,7 @@ class ExecutionRecord(BaseModel):
     duration_seconds: float | None = None
     status: str = "started"  # 'started', 'completed', 'degraded', 'failed'
     tokens_estimated: int = 0
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3.6-flash"
     degraded_reasons: list[str] = Field(default_factory=list)
     error_message: str | None = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -42,7 +42,7 @@ class ExecutionTracker:
         user_id: int,
         query: str,
         conversation_id: str | None = None,
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-3.6-flash",
     ) -> ExecutionRecord:
         """Create and register a new execution record."""
         exec_id = f"exec_{uuid.uuid4().hex[:12]}"

@@ -23,11 +23,12 @@ class EmbeddingProvider:
     def __init__(
         self,
         api_key: str,
-        model: str = "text-embedding-004",
-        dimension: int = 768,
+        model: str = "gemini-embedding-001",
+        dimension: int = 3072,
+        model_name: str | None = None,
     ) -> None:
         self.api_key = api_key
-        self.model = model
+        self.model = model_name or model
         self.dimension = dimension
         self._client: genai.Client | None = None
 
@@ -74,8 +75,12 @@ class EmbeddingProvider:
                 ),
                 timeout=15.0,
             )
-            if response.embeddings:
+            if hasattr(response, "embeddings") and response.embeddings:
                 values = response.embeddings[0].values
+                if values:
+                    return list(values)
+            elif hasattr(response, "embedding") and response.embedding:
+                values = response.embedding.values
                 if values:
                     return list(values)
             raise EmbeddingError("Empty embedding returned by GenAI model.")

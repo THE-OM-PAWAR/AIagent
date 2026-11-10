@@ -12,9 +12,9 @@ class ModelRouter:
 
     def __init__(
         self,
-        small_model: str = "gemini-2.5-flash",
-        medium_model: str = "gemini-2.5-flash",
-        large_model: str = "gemini-1.5-pro",
+        small_model: str = "gemini-3.5-flash",
+        medium_model: str = "gemini-3.6-flash",
+        large_model: str = "gemini-3.6-flash",
     ) -> None:
         self.tier_models: dict[ModelTier, str] = {
             ModelTier.SMALL: small_model,

@@ -324,6 +324,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info("Handling /health command from user_id=%s", update.effective_user.id if update.effective_user else "unknown")
     db_client: DatabaseClient | None = context.bot_data.get("db_client")
     config: Config | None = context.bot_data.get("config")
+    orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
 
     mongo_status = "Disconnected"
     latency_ms = 0.0
@@ -336,6 +337,37 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             mongo_status = f"🟢 Connected ({latency_ms:.1f}ms)"
         except Exception as exc:
             mongo_status = f"🔴 Error: {exc.__class__.__name__}"
+
+    # PostgreSQL (Neon) check
+    postgres_status = "Not configured"
+    db_url = getattr(orchestrator, "database_url", None) or (getattr(config, "database_url", None) if config else None)
+    if db_url:
+        try:
+            from sqlalchemy.ext.asyncio import create_async_engine
+            from sqlalchemy import text
+            start_t = time.perf_counter()
+            pg_engine = create_async_engine(db_url, pool_pre_ping=True)
+            async with pg_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            await pg_engine.dispose()
+            pg_latency = (time.perf_counter() - start_t) * 1000
+            postgres_status = f"🟢 Connected ({pg_latency:.1f}ms)"
+        except Exception as exc:
+            postgres_status = f"🔴 Error: {exc.__class__.__name__}"
+
+    # Qdrant Memory / Vector DB check
+    qdrant_status = "Not configured"
+    if orchestrator and getattr(orchestrator, "memory_manager", None):
+        try:
+            mm = orchestrator.memory_manager
+            start_t = time.perf_counter()
+            colls = await mm.qdrant.client.get_collections()
+            q_latency = (time.perf_counter() - start_t) * 1000
+            qdrant_status = f"🟢 Connected ({q_latency:.1f}ms, {len(colls.collections)} colls)"
+        except Exception as exc:
+            qdrant_status = f"🔴 Error: {exc.__class__.__name__}"
+    elif config and getattr(config, "qdrant_url", None) and config.qdrant_url != ":memory:":
+        qdrant_status = "🟡 Uninitialized"
 
     # Telegram API connectivity check
     telegram_status = "🔴 Unknown"
@@ -351,18 +383,27 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     model_name = config.gemini_model if config else "Unknown"
     allowed_count = len(config.allowed_telegram_user_ids) if config else 0
-    app_state = "🟢 Operational" if "🟢" in mongo_status else "⚠️ Degraded"
+    is_operational = "🟢" in postgres_status or "🟢" in mongo_status
+    app_state = "🟢 Operational" if is_operational else "⚠️ Degraded"
 
-    status_report = (
-        "🏥 *System Health Status*\n\n"
-        f"• *Application:* {app_state}\n"
-        f"• *MongoDB:* {mongo_status}\n"
-        f"• *Telegram API:* {telegram_status}\n"
-        f"• *Status:* Operational\n"
-        f"• *Gemini Model:* `{model_name}`\n"
-        f"• *Authorized Users:* {allowed_count}\n"
-        f"• *Environment:* `{config.environment if config else 'production'}`"
-    )
+    lines = [
+        "🏥 *System Health Status*",
+        "",
+        f"• *Application:* {app_state}",
+    ]
+    if postgres_status != "Not configured":
+        lines.append(f"• *PostgreSQL (Neon):* {postgres_status}")
+    if qdrant_status != "Not configured":
+        lines.append(f"• *Qdrant Vector DB:* {qdrant_status}")
+    if mongo_status != "Disconnected":
+        lines.append(f"• *MongoDB:* {mongo_status}")
+    lines.extend([
+        f"• *Telegram API:* {telegram_status}",
+        f"• *Gemini Model:* `{model_name}`",
+        f"• *Authorized Users:* {allowed_count}",
+        f"• *Environment:* `{config.environment if config else 'production'}`",
+    ])
+    status_report = "\n".join(lines)
     if update.message:
         await update.message.reply_text(status_report, parse_mode="Markdown")
 

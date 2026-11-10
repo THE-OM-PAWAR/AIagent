@@ -29,6 +29,24 @@ class ModelSpec(BaseModel):
 
 # Well-known model specifications
 MODEL_SPECS: dict[str, ModelSpec] = {
+    "gemini-3.6-flash": ModelSpec(
+        model_name="gemini-3.6-flash",
+        max_context_window=1048576,
+        default_token_budget=32768,
+        reserved_response_tokens=4096,
+    ),
+    "gemini-3.5-flash": ModelSpec(
+        model_name="gemini-3.5-flash",
+        max_context_window=1048576,
+        default_token_budget=32768,
+        reserved_response_tokens=4096,
+    ),
+    "gemini-3.1-flash-lite": ModelSpec(
+        model_name="gemini-3.1-flash-lite",
+        max_context_window=1048576,
+        default_token_budget=16384,
+        reserved_response_tokens=2048,
+    ),
     "gemini-2.5-flash": ModelSpec(
         model_name="gemini-2.5-flash",
         max_context_window=1048576,
@@ -40,12 +58,6 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         max_context_window=1048576,
         default_token_budget=32768,
         reserved_response_tokens=4096,
-    ),
-    "gemini-1.5-pro": ModelSpec(
-        model_name="gemini-1.5-pro",
-        max_context_window=2097152,
-        default_token_budget=65536,
-        reserved_response_tokens=8192,
     ),
     "gemini-1.5-flash": ModelSpec(
         model_name="gemini-1.5-flash",
@@ -136,7 +148,7 @@ class TokenBudgetManager:
 
     def __init__(
         self,
-        default_model: str = "gemini-2.5-flash",
+        default_model: str = "gemini-3.6-flash",
         custom_specs: dict[str, ModelSpec] | None = None,
     ) -> None:
         self.default_model = default_model
@@ -152,7 +164,7 @@ class TokenBudgetManager:
         norm = model_name.strip().lower()
         if norm in self.specs:
             return self.specs[norm]
-        # Match prefix (e.g. gemini-2.5-flash-latest -> gemini-2.5-flash)
+        # Match prefix (e.g. gemini-3.6-flash-latest -> gemini-3.6-flash)
         for key, spec in self.specs.items():
             if norm.startswith(key):
                 return spec

@@ -64,8 +64,8 @@ class IntelligenceOrchestrator:
             getattr(gemini_client, "_system_instruction", None)
             or "You are a helpful, respectful, and concise personal AI assistant."
         )
-        raw_model = model_name or getattr(gemini_client, "model", "gemini-2.5-flash")
-        self.model_name = raw_model if isinstance(raw_model, str) else "gemini-2.5-flash"
+        raw_model = model_name or getattr(gemini_client, "model", "gemini-3.6-flash")
+        self.model_name = raw_model if isinstance(raw_model, str) else "gemini-3.6-flash"
 
         # Initialize Context Engine
         self.context_builder = context_builder or IntelligentContextBuilder(
@@ -78,9 +78,9 @@ class IntelligenceOrchestrator:
         # Multi-Agent and Model Routing Infrastructure
         self.llm_provider = GeminiProvider(self.gemini_client)
         self.model_router = ModelRouter(
-            small_model=self.model_name,
+            small_model="gemini-3.5-flash",
             medium_model=self.model_name,
-            large_model="gemini-1.5-pro",
+            large_model=self.model_name,
         )
         self.llm_manager = LLMManager(self.llm_provider, self.model_router)
         self.agent_router = AgentRouter()

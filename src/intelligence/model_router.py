@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class ModelRouter:
     """Routes requests to the designated intelligence model or provider."""
 
-    def __init__(self, default_model: str = "gemini-2.5-flash") -> None:
+    def __init__(self, default_model: str = "gemini-3.6-flash") -> None:
         self.default_model = default_model
         self._routes: dict[str, Any] = {}
 

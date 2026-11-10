@@ -79,6 +79,46 @@ async def run_health_check(skip_telegram: bool = False) -> tuple[bool, dict]:
         except Exception:
             pass
 
+    # 2b. PostgreSQL Connectivity Check (Neon)
+    if getattr(config, "database_url", None):
+        try:
+            from sqlalchemy.ext.asyncio import create_async_engine
+            from sqlalchemy import text
+            engine = create_async_engine(config.database_url, pool_pre_ping=True)
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            await engine.dispose()
+            report["checks"]["postgresql"] = {
+                "status": "ok",
+            }
+        except Exception as exc:
+            report["checks"]["postgresql"] = {
+                "status": "error",
+                "error": exc.__class__.__name__,
+            }
+            all_ok = False
+
+    # 2c. Qdrant Vector Storage Check
+    if getattr(config, "qdrant_url", None) and config.qdrant_url != ":memory:":
+        try:
+            from qdrant_client import AsyncQdrantClient
+            qdrant = AsyncQdrantClient(
+                url=config.qdrant_url,
+                api_key=config.qdrant_api_key,
+                timeout=5.0,
+            )
+            await qdrant.get_collections()
+            await qdrant.close()
+            report["checks"]["qdrant"] = {
+                "status": "ok",
+            }
+        except Exception as exc:
+            report["checks"]["qdrant"] = {
+                "status": "error",
+                "error": exc.__class__.__name__,
+            }
+            all_ok = False
+
     # 3. Telegram API Check
     if not skip_telegram:
         try:

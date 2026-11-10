@@ -60,9 +60,9 @@ class Config:
     embedding_dimension: int = 768
     memory_top_k: int = 5
     memory_similarity_threshold: float = 0.65
-    model_tier_small: str = "gemini-2.5-flash"
-    model_tier_medium: str = "gemini-2.5-flash"
-    model_tier_large: str = "gemini-1.5-pro"
+    model_tier_small: str = "gemini-3.5-flash"
+    model_tier_medium: str = "gemini-3.6-flash"
+    model_tier_large: str = "gemini-3.6-flash"
 
     @classmethod
     def load(cls, env_file: str | Path | None = None) -> "Config":
@@ -114,7 +114,7 @@ class Config:
 
         gemini_model = os.getenv("GEMINI_MODEL", "").strip()
         if not gemini_model:
-            errors.append("GEMINI_MODEL is required and cannot be empty (e.g. 'gemini-2.5-flash').")
+            errors.append("GEMINI_MODEL is required and cannot be empty (e.g. 'gemini-3.6-flash').")
 
         gemini_system_instruction = os.getenv(
             "GEMINI_SYSTEM_INSTRUCTION",
@@ -166,12 +166,12 @@ class Config:
         qdrant_url = os.getenv("QDRANT_URL", ":memory:").strip()
         qdrant_api_key = os.getenv("QDRANT_API_KEY", "").strip() or None
         qdrant_collection_name = os.getenv("QDRANT_COLLECTION_NAME", "aiagent_memories").strip()
-        embedding_model = os.getenv("EMBEDDING_MODEL", "text-embedding-004").strip()
+        embedding_model = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001").strip()
 
         try:
-            embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "768"))
+            embedding_dimension = int(os.getenv("EMBEDDING_DIMENSION", "3072"))
         except ValueError:
-            embedding_dimension = 768
+            embedding_dimension = 3072
 
         try:
             memory_top_k = int(os.getenv("MEMORY_TOP_K", "5"))
@@ -183,9 +183,9 @@ class Config:
         except ValueError:
             memory_similarity_threshold = 0.65
 
-        model_tier_small = os.getenv("MODEL_TIER_SMALL", "gemini-2.5-flash").strip()
+        model_tier_small = os.getenv("MODEL_TIER_SMALL", "gemini-3.5-flash").strip()
         model_tier_medium = os.getenv("MODEL_TIER_MEDIUM", gemini_model).strip()
-        model_tier_large = os.getenv("MODEL_TIER_LARGE", "gemini-1.5-pro").strip()
+        model_tier_large = os.getenv("MODEL_TIER_LARGE", "gemini-3.6-flash").strip()
 
         if errors:
             formatted_errors = "\n  - " + "\n  - ".join(errors)

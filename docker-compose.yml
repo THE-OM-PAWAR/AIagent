@@ -56,6 +56,22 @@ services:
       CONVERSATION_HISTORY_LIMIT: ${CONVERSATION_HISTORY_LIMIT:-20}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      # Neon PostgreSQL / SQLAlchemy
+      DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_URL_POOLED: ${DATABASE_URL_POOLED:-}
+      # Qdrant Vector Storage
+      QDRANT_URL: ${QDRANT_URL:-:memory:}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION_NAME: ${QDRANT_COLLECTION_NAME:-aiagent_memories}
+      # Embedding & Memory Pipeline
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-gemini-embedding-001}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-3072}
+      MEMORY_TOP_K: ${MEMORY_TOP_K:-5}
+      MEMORY_SIMILARITY_THRESHOLD: ${MEMORY_SIMILARITY_THRESHOLD:-0.65}
+      # Model Tier Routing
+      MODEL_TIER_SMALL: ${MODEL_TIER_SMALL:-gemini-2.5-flash}
+      MODEL_TIER_MEDIUM: ${MODEL_TIER_MEDIUM:-gemini-2.5-flash}
+      MODEL_TIER_LARGE: ${MODEL_TIER_LARGE:-gemini-1.5-pro}
     networks:
       - aiagent-network
     depends_on:

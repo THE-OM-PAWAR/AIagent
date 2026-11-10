@@ -142,7 +142,7 @@ class IntelligentContextBuilder:
         self,
         database_url: str | None = None,
         memory_manager: MemoryManager | None = None,
-        default_model: str = "gemini-2.5-flash",
+        default_model: str = "gemini-3.6-flash",
         system_prompt: str = "You are a helpful, respectful, and concise personal AI assistant.",
     ) -> None:
         self.database_url = database_url

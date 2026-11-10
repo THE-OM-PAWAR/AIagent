@@ -28,12 +28,15 @@ class QdrantStorage:
         url: str = ":memory:",
         api_key: str | None = None,
         collection_name: str = "aiagent_memories",
-        vector_dim: int = 768,
+        vector_dim: int = 3072,
+        vector_dimension: int | None = None,
+        timeout: float = 30.0,
     ) -> None:
         self.url = url
         self.api_key = api_key
         self.collection_name = collection_name
-        self.vector_dim = vector_dim
+        self.vector_dim = vector_dimension or vector_dim
+        self.timeout = timeout
         self._client: AsyncQdrantClient | None = None
 
     async def get_client(self) -> AsyncQdrantClient:
@@ -44,7 +47,7 @@ class QdrantStorage:
                 self._client = AsyncQdrantClient(location=":memory:")
             else:
                 logger.info("Connecting to Qdrant at %s...", self.url)
-                self._client = AsyncQdrantClient(url=self.url, api_key=self.api_key)
+                self._client = AsyncQdrantClient(url=self.url, api_key=self.api_key, timeout=self.timeout)
         return self._client
 
     async def initialize(self) -> None:
