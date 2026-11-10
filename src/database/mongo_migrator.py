@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 import logging
 from typing import Any
 
-from pymongo import AsyncMongoClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,8 +31,16 @@ class MongoPostgresMigrator:
 
     async def run_migration(self, extract_memories: bool = True) -> dict[str, int]:
         """Execute full data migration from MongoDB to PostgreSQL without discarding history."""
+        try:
+            from pymongo import AsyncMongoClient
+        except ImportError as err:
+            raise RuntimeError(
+                "pymongo is required to run MongoPostgresMigrator. "
+                "Install pymongo temporarily to run one-time data migration."
+            ) from err
+
         logger.info("Starting MongoDB to PostgreSQL migration...")
-        mongo_client: AsyncMongoClient = AsyncMongoClient(self.mongodb_uri, serverSelectionTimeoutMS=5000)
+        mongo_client: Any = AsyncMongoClient(self.mongodb_uri, serverSelectionTimeoutMS=5000)
         mongo_db = mongo_client[self.mongodb_db_name]
 
         stats = {

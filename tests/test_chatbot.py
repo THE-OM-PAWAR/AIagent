@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from telegram import Chat, Message, Update, User
 
 from src.config import Config, ConfigError
-from src.database import DatabaseClient, mask_mongo_uri
 from src.gemini import (
     GeminiAPIError,
     GeminiClient,
@@ -117,151 +116,6 @@ class TestDuplicateMessageFilter(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await filter_cache.is_duplicate(100))
 
 
-class TestDatabaseSecurityAndLifecycle(unittest.IsolatedAsyncioTestCase):
-    """Test URI masking, connection failure handling, and index creation."""
-
-    def test_mask_mongo_uri(self) -> None:
-        raw_uri = "mongodb://bot_user:secret_pass123@cluster.mongodb.net:27017/db"
-        masked = mask_mongo_uri(raw_uri)
-        self.assertNotIn("secret_pass123", masked)
-        self.assertNotIn("bot_user", masked)
-        self.assertIn("mongodb://***:***@cluster.mongodb.net", masked)
-
-    def test_mask_mongo_uri_no_credentials(self) -> None:
-        raw_uri = "mongodb://localhost:27017"
-        self.assertEqual(mask_mongo_uri(raw_uri), "mongodb://localhost:27017")
-
-    async def test_connect_failure_raises(self) -> None:
-        db = DatabaseClient("mongodb://127.0.0.1:54321/?serverSelectionTimeoutMS=500", "test_db")
-        with self.assertRaises(Exception):
-            await db.connect()
-
-
-class TestDatabaseOperations(unittest.IsolatedAsyncioTestCase):
-    """Test conversation metadata and message persistence with live or mocked MongoDB."""
-
-    async def asyncSetUp(self) -> None:
-        self.db_name = f"test_telegram_ai_{int(datetime.now(timezone.utc).timestamp())}"
-        self.db = DatabaseClient("mongodb://localhost:27017", self.db_name)
-        try:
-            await self.db.connect()
-            self.live_mongo = True
-        except Exception:
-            self.live_mongo = False
-
-    async def asyncTearDown(self) -> None:
-        if self.live_mongo:
-            try:
-                await self.db._client.drop_database(self.db_name)
-            except Exception:
-                pass
-            await self.db.close()
-
-    async def test_get_or_create_and_clear_conversation(self) -> None:
-        if not self.live_mongo:
-            self.skipTest("Local MongoDB not available")
-
-        user_id = 12345
-        conv1 = await self.db.get_or_create_active_conversation(user_id)
-        self.assertTrue(conv1["is_active"])
-        conv1_id = conv1["conversation_id"]
-
-        conv1_fetch = await self.db.get_or_create_active_conversation(user_id)
-        self.assertEqual(conv1_fetch["conversation_id"], conv1_id)
-
-        cleared = await self.db.clear_active_conversation(user_id)
-        self.assertTrue(cleared)
-
-        conv2 = await self.db.get_or_create_active_conversation(user_id)
-        self.assertTrue(conv2["is_active"])
-        self.assertNotEqual(conv2["conversation_id"], conv1_id)
-
-    async def test_save_turn_and_chronological_retrieval(self) -> None:
-        if not self.live_mongo:
-            self.skipTest("Local MongoDB not available")
-
-        user_id = 88888
-        conv = await self.db.get_or_create_active_conversation(user_id)
-        conv_id = conv["conversation_id"]
-
-        await self.db.save_turn(conv_id, user_id, "User Q1", "Model A1")
-        await self.db.save_turn(conv_id, user_id, "User Q2", "Model A2")
-
-        updated_conv = await self.db.conversations.find_one({"conversation_id": conv_id})
-        self.assertEqual(updated_conv["message_count"], 4)
-
-        messages = await self.db.get_recent_messages(conv_id, limit=10)
-        self.assertEqual(len(messages), 4)
-
-        self.assertEqual(messages[0]["role"], "user")
-        self.assertEqual(messages[0]["content"], "User Q1")
-        self.assertEqual(messages[1]["role"], "model")
-        self.assertEqual(messages[1]["content"], "Model A1")
-        self.assertEqual(messages[2]["role"], "user")
-        self.assertEqual(messages[2]["content"], "User Q2")
-        self.assertEqual(messages[3]["role"], "model")
-        self.assertEqual(messages[3]["content"], "Model A2")
-
-    async def test_context_limit_truncation(self) -> None:
-        if not self.live_mongo:
-            self.skipTest("Local MongoDB not available")
-
-        user_id = 77777
-        conv = await self.db.get_or_create_active_conversation(user_id)
-        conv_id = conv["conversation_id"]
-
-        for i in range(1, 7):
-            await self.db.save_turn(conv_id, user_id, f"Question {i}", f"Answer {i}")
-
-        messages = await self.db.get_recent_messages(conv_id, limit=4)
-        self.assertEqual(len(messages), 4)
-        self.assertEqual(messages[0]["content"], "Question 5")
-        self.assertEqual(messages[1]["content"], "Answer 5")
-        self.assertEqual(messages[2]["content"], "Question 6")
-        self.assertEqual(messages[3]["content"], "Answer 6")
-
-    async def test_persistence_across_restarts_and_clear(self) -> None:
-        if not self.live_mongo:
-            self.skipTest("Local MongoDB not available")
-
-        user_id = 991199
-
-        # --- SESSION 1 ---
-        conv1 = await self.db.get_or_create_active_conversation(user_id)
-        conv1_id = conv1["conversation_id"]
-
-        await self.db.save_turn(
-            conv1_id,
-            user_id,
-            "Hello! My favorite programming language is Python.",
-            "Great choice! Python is powerful and readable.",
-        )
-
-        await self.db.close()
-
-        # --- SESSION 2 ---
-        db_restarted = DatabaseClient("mongodb://localhost:27017", self.db_name)
-        await db_restarted.connect()
-        try:
-            conv_resumed = await db_restarted.get_or_create_active_conversation(user_id)
-            self.assertEqual(conv_resumed["conversation_id"], conv1_id)
-
-            history = await db_restarted.get_recent_messages(conv_resumed["conversation_id"], limit=20)
-            self.assertEqual(len(history), 2)
-            self.assertEqual(history[0]["content"], "Hello! My favorite programming language is Python.")
-            self.assertEqual(history[1]["content"], "Great choice! Python is powerful and readable.")
-
-            await db_restarted.clear_active_conversation(user_id)
-
-            conv_new = await db_restarted.get_or_create_active_conversation(user_id)
-            self.assertNotEqual(conv_new["conversation_id"], conv1_id)
-            new_history = await db_restarted.get_recent_messages(conv_new["conversation_id"], limit=20)
-            self.assertEqual(len(new_history), 0)
-        finally:
-            await db_restarted.close()
-            await self.db.connect()
-
-
 class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
     """Test Gemini client conversational logic with history and error handling."""
 
@@ -347,7 +201,7 @@ class TestTelegramHandlersWithAuth(unittest.IsolatedAsyncioTestCase):
         self.context = MagicMock()
         self.context.bot = self.bot
         self.gemini_mock = AsyncMock(spec=GeminiClient)
-        self.db_mock = AsyncMock(spec=DatabaseClient)
+        self.db_mock = AsyncMock()
         self.config_mock = MagicMock(
             allowed_telegram_user_ids=frozenset({999}),
             conversation_history_limit=10,

@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.core.context_builder import ContextBuilder
 from src.core.orchestrator import AgentOrchestrator
-from src.database import DatabaseClient
 from src.intelligence.providers.gemini import (
     GeminiClient,
     GeminiRateLimitError,
@@ -54,7 +53,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self.gemini_mock = AsyncMock(spec=GeminiClient)
-        self.db_mock = AsyncMock(spec=DatabaseClient)
+        self.db_mock = AsyncMock()
         self.orchestrator = AgentOrchestrator(
             gemini_client=self.gemini_mock,
             db_client=self.db_mock,
