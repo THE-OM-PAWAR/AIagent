@@ -6,7 +6,7 @@ import sys
 
 from src.config import Config, ConfigError
 from src.core.orchestrator import AgentOrchestrator
-from src.database import DatabaseClient
+from src.database.session import close_engine, get_engine
 from src.intelligence.providers.gemini import GeminiClient
 from src.interfaces.telegram import create_bot_app, start_bot, stop_bot
 from src.logger import get_logger, setup_logging
@@ -34,8 +34,7 @@ async def main() -> None:
         config.conversation_history_limit,
     )
 
-    # 3. Initialize core services (Database & Gemini)
-    db_client = DatabaseClient(uri=config.mongodb_uri, db_name=config.mongodb_db_name)
+    # 3. Initialize core services (PostgreSQL & Gemini)
     gemini_client = GeminiClient(
         api_key=config.gemini_api_key,
         model=config.gemini_model,
@@ -49,23 +48,26 @@ async def main() -> None:
         logger.error("Failed initializing Gemini service: %s", exc, exc_info=True)
         sys.exit(1)
 
-    # 3. Connect to MongoDB with retry backoff for containerized environments
+    # Verify PostgreSQL (Neon) connection with retry backoff for containerized environments
     max_retries = 5
     for attempt in range(1, max_retries + 1):
         try:
-            await db_client.connect()
+            from sqlalchemy import text
+            engine = get_engine(config.database_url)
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            logger.info("Connected to PostgreSQL successfully.")
             break
         except Exception as exc:
             if attempt == max_retries:
                 logger.error(
-                    "Failed connecting to MongoDB at %s after %d attempts: %s",
-                    db_client.masked_uri,
+                    "Failed connecting to PostgreSQL after %d attempts: %s",
                     max_retries,
                     exc,
                 )
                 sys.exit(1)
             logger.warning(
-                "MongoDB connection attempt %d/%d failed (%s). Retrying in 2 seconds...",
+                "PostgreSQL connection attempt %d/%d failed (%s). Retrying in 2 seconds...",
                 attempt,
                 max_retries,
                 exc,
@@ -107,16 +109,15 @@ async def main() -> None:
     # 5. Initialize Agent Orchestration Layer
     orchestrator = AgentOrchestrator(
         gemini_client=gemini_client,
-        database_url=getattr(config, "database_url", None),
+        database_url=config.database_url,
         memory_manager=memory_manager,
-        db_client=db_client,
         context_limit=config.conversation_history_limit,
         system_prompt=config.gemini_system_instruction,
         model_name=config.gemini_model,
     )
 
     # 6. Build Telegram bot application with orchestrator injection
-    bot_app = create_bot_app(config, gemini_client, db_client, orchestrator=orchestrator)
+    bot_app = create_bot_app(config, gemini_client, orchestrator=orchestrator)
 
     # 5. Setup graceful shutdown handling
     stop_event = asyncio.Event()
@@ -150,9 +151,9 @@ async def main() -> None:
         except Exception as exc:
             logger.error("Error during bot shutdown: %s", exc)
         try:
-            await db_client.close()
+            await close_engine()
         except Exception as exc:
-            logger.error("Error closing MongoDB client: %s", exc)
+            logger.error("Error closing PostgreSQL engine: %s", exc)
         logger.info("Application shutdown sequence completed.")
 
 

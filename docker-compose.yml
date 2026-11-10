@@ -8,34 +8,7 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
-  # 1. MongoDB Database Service (Isolated internally, persistent storage)
-  mongo:
-    image: mongo:7.0
-    container_name: aiagent-mongo
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-admin}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?MongoDB root password is required}
-      MONGO_INITDB_DATABASE: ${MONGODB_DB_NAME:-telegram_ai_bot}
-      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:-aiagent_user}
-      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-aiagent_password}
-    volumes:
-      - mongo_data:/data/db
-      - ./docker/mongo/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
-    networks:
-      - aiagent-network
-    # Ports are NOT mapped to the host, keeping database access strictly internal
-    expose:
-      - "27017"
-    healthcheck:
-      test: ["CMD-SHELL", "mongosh --eval 'db.adminCommand(\"ping\")' --quiet || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    logging: *default-logging
-
-  # 2. Python Telegram Assistant Application Service
+  # Python Telegram Assistant Application Service
   app:
     image: ${AIAGENT_IMAGE:-aiagent-app}:${IMAGE_TAG:-latest}
     build:
@@ -48,16 +21,14 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Telegram bot token is required}
       ALLOWED_TELEGRAM_USER_IDS: ${ALLOWED_TELEGRAM_USER_IDS:?Allowed Telegram user IDs are required}
       GEMINI_API_KEY: ${GEMINI_API_KEY:?Gemini API key is required}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
       GEMINI_SYSTEM_INSTRUCTION: ${GEMINI_SYSTEM_INSTRUCTION:-You are a helpful, respectful, and concise personal AI assistant.}
       GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-60.0}
-      MONGODB_URI: ${MONGODB_URI:-mongodb://aiagent_user:aiagent_password@mongo:27017/telegram_ai_bot?authSource=telegram_ai_bot}
-      MONGODB_DB_NAME: ${MONGODB_DB_NAME:-telegram_ai_bot}
       CONVERSATION_HISTORY_LIMIT: ${CONVERSATION_HISTORY_LIMIT:-20}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-production}
       # Neon PostgreSQL / SQLAlchemy
-      DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required for Neon PostgreSQL}
       DATABASE_URL_POOLED: ${DATABASE_URL_POOLED:-}
       # Qdrant Vector Storage
       QDRANT_URL: ${QDRANT_URL:-:memory:}
@@ -69,14 +40,11 @@ services:
       MEMORY_TOP_K: ${MEMORY_TOP_K:-5}
       MEMORY_SIMILARITY_THRESHOLD: ${MEMORY_SIMILARITY_THRESHOLD:-0.65}
       # Model Tier Routing
-      MODEL_TIER_SMALL: ${MODEL_TIER_SMALL:-gemini-2.5-flash}
-      MODEL_TIER_MEDIUM: ${MODEL_TIER_MEDIUM:-gemini-2.5-flash}
-      MODEL_TIER_LARGE: ${MODEL_TIER_LARGE:-gemini-1.5-pro}
+      MODEL_TIER_SMALL: ${MODEL_TIER_SMALL:-gemini-3.5-flash}
+      MODEL_TIER_MEDIUM: ${MODEL_TIER_MEDIUM:-gemini-3.6-flash}
+      MODEL_TIER_LARGE: ${MODEL_TIER_LARGE:-gemini-3.6-flash}
     networks:
       - aiagent-network
-    depends_on:
-      mongo:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-m", "src.healthcheck", "--skip-telegram"]
       interval: 30s
@@ -89,8 +57,4 @@ networks:
   aiagent-network:
     name: aiagent-network
     driver: bridge
-
-volumes:
-  mongo_data:
-    name: aiagent_mongo_data
 

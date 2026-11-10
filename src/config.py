@@ -47,8 +47,6 @@ class Config:
     gemini_model: str
     gemini_system_instruction: str
     gemini_timeout_seconds: float
-    mongodb_uri: str
-    mongodb_db_name: str
     conversation_history_limit: int
     log_level: str
     environment: str
@@ -132,14 +130,6 @@ class Config:
             errors.append(f"GEMINI_TIMEOUT_SECONDS must be a valid number, got '{raw_timeout}'.")
             gemini_timeout_seconds = DEFAULT_TIMEOUT_SECONDS
 
-        mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017").strip()
-        if not mongodb_uri:
-            errors.append("MONGODB_URI cannot be empty.")
-
-        mongodb_db_name = os.getenv("MONGODB_DB_NAME", "telegram_ai_bot").strip()
-        if not mongodb_db_name:
-            errors.append("MONGODB_DB_NAME cannot be empty.")
-
         raw_history_limit = os.getenv("CONVERSATION_HISTORY_LIMIT", str(DEFAULT_HISTORY_LIMIT)).strip()
         try:
             conversation_history_limit = int(raw_history_limit)
@@ -198,8 +188,6 @@ class Config:
             gemini_model=gemini_model,
             gemini_system_instruction=gemini_system_instruction,
             gemini_timeout_seconds=gemini_timeout_seconds,
-            mongodb_uri=mongodb_uri,
-            mongodb_db_name=mongodb_db_name,
             conversation_history_limit=conversation_history_limit,
             log_level=log_level,
             environment=environment,

@@ -43,8 +43,6 @@ class TestConfig(unittest.TestCase):
             "GEMINI_MODEL": "gemini-2.5-flash",
             "GEMINI_SYSTEM_INSTRUCTION": "You are a test assistant.",
             "GEMINI_TIMEOUT_SECONDS": "45.0",
-            "MONGODB_URI": "mongodb://localhost:27017",
-            "MONGODB_DB_NAME": "test_db",
             "CONVERSATION_HISTORY_LIMIT": "15",
             "LOG_LEVEL": "DEBUG",
             "ENVIRONMENT": "production",
@@ -442,7 +440,6 @@ class TestTelegramHandlersWithAuth(unittest.IsolatedAsyncioTestCase):
         reply = self.message.reply_text.call_args[0][0]
         self.assertIn("System Health Status", reply)
         self.assertIn("Operational", reply)
-        self.assertIn("MongoDB", reply)
         self.assertIn("Telegram API", reply)
 
         # Unauthorized
@@ -481,8 +478,6 @@ class TestHealthCheckCLI(unittest.IsolatedAsyncioTestCase):
             "ALLOWED_TELEGRAM_USER_IDS": "999",
             "GEMINI_API_KEY": "test_key",
             "GEMINI_MODEL": "gemini-2.5-flash",
-            "MONGODB_URI": "mongodb://localhost:27017",
-            "MONGODB_DB_NAME": "test_db",
         }
         with patch.dict(os.environ, env, clear=True):
             with patch("src.healthcheck.Bot.get_me", new=AsyncMock(return_value=MagicMock(username="test_bot"))):
@@ -535,14 +530,12 @@ class TestDockerInfrastructure(unittest.TestCase):
             content = f.read()
         self.assertIn("name: aiagent", content)
         self.assertIn("aiagent-app", content)
-        self.assertIn("aiagent-mongo", content)
         self.assertIn("aiagent-network", content)
+        # Verify legacy MongoDB service is removed in favor of Neon PostgreSQL
+        self.assertNotIn("aiagent-mongo", content)
         # Verify Nginx and Certbot are removed (long polling bot needs no public HTTP ingress)
         self.assertNotIn("aiagent-nginx", content)
         self.assertNotIn("certbot", content)
-        # Verify MongoDB ports are NOT published to the host
-        self.assertNotIn('"27017:27017"', content)
-        self.assertNotIn("27017:27017", content)
 
 
 if __name__ == "__main__":

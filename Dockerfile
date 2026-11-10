@@ -30,7 +30,7 @@ USER appuser
 # Use SIGTERM for graceful shutdown
 STOPSIGNAL SIGTERM
 
-# Container healthcheck: verifies application and MongoDB connectivity
+# Container healthcheck: verifies application and PostgreSQL connectivity
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD python -m src.healthcheck --skip-telegram || exit 1
 

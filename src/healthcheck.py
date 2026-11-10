@@ -15,7 +15,6 @@ from telegram import Bot
 from telegram.request import HTTPXRequest
 
 from src.config import Config, ConfigError
-from src.database import DatabaseClient
 
 
 import os
@@ -59,27 +58,7 @@ async def run_health_check(skip_telegram: bool = False) -> tuple[bool, dict]:
         report["status"] = "unhealthy"
         return False, report
 
-    # 2. MongoDB Connectivity Check
-    db_client = DatabaseClient(uri=config.mongodb_uri, db_name=config.mongodb_db_name)
-    try:
-        await db_client.connect()
-        report["checks"]["mongodb"] = {
-            "status": "ok",
-            "database": config.mongodb_db_name,
-        }
-    except Exception as exc:
-        report["checks"]["mongodb"] = {
-            "status": "error",
-            "error": exc.__class__.__name__,
-        }
-        all_ok = False
-    finally:
-        try:
-            await db_client.close()
-        except Exception:
-            pass
-
-    # 2b. PostgreSQL Connectivity Check (Neon)
+    # 2. PostgreSQL Connectivity Check (Neon)
     if getattr(config, "database_url", None):
         try:
             from sqlalchemy.ext.asyncio import create_async_engine

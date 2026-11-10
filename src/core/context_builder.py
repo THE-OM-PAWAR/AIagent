@@ -19,7 +19,7 @@ class ContextBuilder:
         """Filter, format, and truncate conversation history for Gemini.
 
         Args:
-            raw_messages: Chronological message records retrieved from MongoDB.
+            raw_messages: Chronological message records retrieved from database.
 
         Returns:
             Sanitized list of message dictionaries with 'role' ('user' or 'model') and 'content'.

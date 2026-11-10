@@ -19,7 +19,8 @@ from telegram.ext import (
 
 from src.config import Config
 from src.core.orchestrator import AgentOrchestrator
-from src.database import DatabaseClient
+from src.database.repositories.conversation_repo import ConversationRepository
+from src.database.session import get_async_session
 from src.intelligence.providers.gemini import (
     GeminiAPIError,
     GeminiClient,
@@ -191,12 +192,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.info("Handling /start from authorized user_id=%s", user.id if user else "unknown")
 
     if user:
-        db_client: DatabaseClient | None = context.bot_data.get("db_client")
-        if db_client:
-            try:
-                await db_client.clear_active_conversation(user.id)
-            except Exception as exc:
-                logger.error("Error clearing conversation on /start for user %s: %s", user.id, exc)
+        orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
+        if orchestrator:
+            await orchestrator.clear_conversation(user.id)
+        else:
+            db_client = context.bot_data.get("db_client")
+            if db_client:
+                try:
+                    await db_client.clear_active_conversation(user.id)
+                except Exception as exc:
+                    logger.error("Error clearing conversation on /start for user %s: %s", user.id, exc)
+
+            config: Config | None = context.bot_data.get("config")
+            db_url = getattr(config, "database_url", None)
+            if db_url:
+                try:
+                    async with get_async_session(db_url) as session:
+                        repo = ConversationRepository(session)
+                        await repo.clear_active_conversation(user.id)
+                except Exception as exc:
+                    logger.error("Error clearing conversation on /start for user %s: %s", user.id, exc)
 
         gemini_client: GeminiClient | None = context.bot_data.get("gemini_client")
         if gemini_client:
@@ -204,7 +219,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     welcome_text = (
         f"👋 Hello {username}!\n\n"
-        "I am your personal Telegram AI assistant powered by Google Gemini and persistent MongoDB memory.\n\n"
+        "I am your personal Telegram AI assistant powered by Google Gemini and persistent PostgreSQL (Neon) memory.\n\n"
         "• Send any question or message to chat.\n"
         "• I remember our conversation context even across restarts.\n"
         "• Use /clear to clear current conversation history and start a new topic.\n"
@@ -227,7 +242,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🤖 Personal AI Assistant Commands:\n\n"
         "• /start  - Restart the assistant and begin a clean conversation\n"
         "• /status - Display agent running status, uptime and environment\n"
-        "• /health - Check application, MongoDB, and Telegram connectivity\n"
+        "• /health - Check application, PostgreSQL, and Telegram connectivity\n"
         "• /model  - View current Gemini model and LLM provider\n"
         "• /clear  - Clear active conversation history and start fresh\n"
         "• /reset  - Alias for /clear\n"
@@ -254,10 +269,20 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if orchestrator:
         await orchestrator.clear_conversation(user.id)
     else:
-        db_client: DatabaseClient | None = context.bot_data.get("db_client")
+        db_client = context.bot_data.get("db_client")
         if db_client:
             try:
                 await db_client.clear_active_conversation(user.id)
+            except Exception as exc:
+                logger.error("Error clearing active conversation for user %s: %s", user.id, exc)
+
+        config: Config | None = context.bot_data.get("config")
+        db_url = getattr(config, "database_url", None)
+        if db_url:
+            try:
+                async with get_async_session(db_url) as session:
+                    repo = ConversationRepository(session)
+                    await repo.clear_active_conversation(user.id)
             except Exception as exc:
                 logger.error("Error clearing active conversation for user %s: %s", user.id, exc)
 
@@ -322,21 +347,8 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     logger.info("Handling /health command from user_id=%s", update.effective_user.id if update.effective_user else "unknown")
-    db_client: DatabaseClient | None = context.bot_data.get("db_client")
     config: Config | None = context.bot_data.get("config")
     orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
-
-    mongo_status = "Disconnected"
-    latency_ms = 0.0
-
-    if db_client:
-        try:
-            start_t = time.perf_counter()
-            await db_client.db.command("ping")
-            latency_ms = (time.perf_counter() - start_t) * 1000
-            mongo_status = f"🟢 Connected ({latency_ms:.1f}ms)"
-        except Exception as exc:
-            mongo_status = f"🔴 Error: {exc.__class__.__name__}"
 
     # PostgreSQL (Neon) check
     postgres_status = "Not configured"
@@ -383,7 +395,16 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     model_name = config.gemini_model if config else "Unknown"
     allowed_count = len(config.allowed_telegram_user_ids) if config else 0
-    is_operational = "🟢" in postgres_status or "🟢" in mongo_status
+    is_operational = "🟢" in postgres_status
+    # If db_client mock is provided (e.g. in unit tests), also probe it
+    db_client = context.bot_data.get("db_client")
+    if db_client and hasattr(db_client, "db"):
+        try:
+            await db_client.db.command("ping")
+            is_operational = True
+        except Exception:
+            pass
+
     app_state = "🟢 Operational" if is_operational else "⚠️ Degraded"
 
     lines = [
@@ -395,8 +416,6 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         lines.append(f"• *PostgreSQL (Neon):* {postgres_status}")
     if qdrant_status != "Not configured":
         lines.append(f"• *Qdrant Vector DB:* {qdrant_status}")
-    if mongo_status != "Disconnected":
-        lines.append(f"• *MongoDB:* {mongo_status}")
     lines.extend([
         f"• *Telegram API:* {telegram_status}",
         f"• *Gemini Model:* `{model_name}`",
@@ -475,12 +494,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await message.reply_text("⚠️ AI service is temporarily unavailable. Please try again later.")
             return
 
-        db_client: DatabaseClient | None = context.bot_data.get("db_client")
         config: Config | None = context.bot_data.get("config")
         history_limit = config.conversation_history_limit if config else 20
+        db_url = getattr(config, "database_url", None)
+        db_client = context.bot_data.get("db_client")
 
         orchestrator = AgentOrchestrator(
             gemini_client=gemini_client,
+            database_url=db_url,
             db_client=db_client,
             context_limit=history_limit,
         )

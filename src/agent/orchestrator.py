@@ -138,7 +138,7 @@ class IntelligenceOrchestrator:
             resolved_conv_id = conversation_id
             active_session = None
 
-            # 4. Resolve active conversation in PostgreSQL or MongoDB
+            # 4. Resolve active conversation in PostgreSQL or legacy db_client
             if self.database_url:
                 try:
                     async with get_async_session(self.database_url) as session:
@@ -154,13 +154,14 @@ class IntelligenceOrchestrator:
                         exec_rec.execution_id,
                         exc,
                     )
-            elif self.db_client:
+            
+            if not resolved_conv_id and self.db_client:
                 try:
                     conv = await self.db_client.get_or_create_active_conversation(user_id)
                     resolved_conv_id = conv.get("conversation_id")
                 except Exception as exc:
                     logger.error(
-                        "Orchestrator [%s]: MongoDB conversation lookup failed: %s",
+                        "Orchestrator [%s]: conversation lookup failed: %s",
                         exec_rec.execution_id,
                         exc,
                     )
@@ -177,7 +178,7 @@ class IntelligenceOrchestrator:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Orchestrator [%s]: MongoDB history retrieval failed: %s",
+                        "Orchestrator [%s]: history retrieval failed: %s",
                         exec_rec.execution_id,
                         exc,
                     )
@@ -289,7 +290,7 @@ class IntelligenceOrchestrator:
                     )
                 except Exception as exc:
                     logger.error(
-                        "Orchestrator [%s]: MongoDB turn persistence failed: %s",
+                        "Orchestrator [%s]: turn persistence failed: %s",
                         exec_rec.execution_id,
                         exc,
                     )
@@ -345,7 +346,7 @@ class IntelligenceOrchestrator:
             )
 
     async def clear_conversation(self, user_id: int) -> bool:
-        """Clear active conversation in PostgreSQL, MongoDB, and Gemini in-memory state."""
+        """Clear active conversation in PostgreSQL and Gemini in-memory state."""
         logger.info("Orchestrator: clearing active conversation for user_id=%s", user_id)
         cleared = False
 
@@ -359,10 +360,10 @@ class IntelligenceOrchestrator:
 
         if self.db_client:
             try:
-                mongo_cleared = await self.db_client.clear_active_conversation(user_id)
-                cleared = cleared or mongo_cleared
+                legacy_cleared = await self.db_client.clear_active_conversation(user_id)
+                cleared = cleared or legacy_cleared
             except Exception as exc:
-                logger.error("Orchestrator: error clearing MongoDB conversation for user %s: %s", user_id, exc)
+                logger.error("Orchestrator: error clearing conversation in legacy db_client for user %s: %s", user_id, exc)
 
         if hasattr(self.gemini_client, "reset_chat"):
             self.gemini_client.reset_chat(user_id)

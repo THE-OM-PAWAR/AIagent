@@ -354,8 +354,6 @@ class TestMultiAgentAndModelRouting(unittest.IsolatedAsyncioTestCase):
             gemini_model="gemini-2.5-flash",
             gemini_system_instruction="You are a helpful assistant.",
             gemini_timeout_seconds=30.0,
-            mongodb_uri="mongodb://localhost:27017",
-            mongodb_db_name="test_db",
             conversation_history_limit=20,
             log_level="INFO",
             environment="testing",
