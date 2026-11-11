@@ -1,38 +1,34 @@
-"""Google Gemini API client and conversational session management provider."""
+"""Google Gemini API client and conversational session management provider with rate limiting."""
+
+from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import uuid
 
 from google import genai
-from google.genai import errors, types
+from google.genai import types
 
-from src.tools.schemas import ToolCall, ToolResult
+from src.intelligence.providers.rate_limiter import (
+    GeminiAPIError,
+    GeminiAuthError,
+    GeminiError,
+    GeminiInvalidRequestError,
+    GeminiRateLimiter,
+    GeminiRateLimitError,
+    GeminiServerError,
+    GeminiTimeoutError,
+    classify_gemini_error,
+    sanitize_secrets,
+)
+
+if TYPE_CHECKING:
+    from src.tools.schemas import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
-
-
-class GeminiError(Exception):
-    """Base exception for Gemini service errors."""
-    pass
-
-
-class GeminiTimeoutError(GeminiError):
-    """Raised when request to Gemini times out."""
-    pass
-
-
-class GeminiRateLimitError(GeminiError):
-    """Raised when Gemini API rate limit or quota is exceeded."""
-    pass
-
-
-class GeminiAPIError(GeminiError):
-    """Raised when Gemini returns an error or empty/filtered response."""
-    pass
 
 
 class GeminiClient:
@@ -44,13 +40,30 @@ class GeminiClient:
         model: str,
         system_instruction: str,
         timeout: float = 60.0,
+        rate_limiter: GeminiRateLimiter | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._system_instruction = system_instruction
         self._timeout = timeout
+        self._rate_limiter = rate_limiter or GeminiRateLimiter(
+            rpm_limit=30,
+            max_concurrency=3,
+            max_retries=3,
+            initial_backoff_seconds=1.0,
+            max_backoff_seconds=30.0,
+        )
         self._client: genai.Client | None = None
         self._sessions: dict[int, Any] = {}
+
+    @property
+    def rate_limiter(self) -> GeminiRateLimiter:
+        """Return the rate limiter instance."""
+        return self._rate_limiter
+
+    def get_telemetry(self) -> dict[str, Any]:
+        """Return current rate limiting and request telemetry."""
+        return self._rate_limiter.telemetry.get_summary()
 
     def initialize(self) -> None:
         """Initialize the Google GenAI client instance."""
@@ -170,37 +183,20 @@ class GeminiClient:
         else:
             chat = self.get_or_create_chat(user_id)
 
-        try:
-            response = await asyncio.wait_for(
+        async def _call_gemini() -> Any:
+            return await asyncio.wait_for(
                 chat.send_message(message=message_text),
                 timeout=self._timeout,
             )
-        except asyncio.TimeoutError as exc:
-            logger.warning(
-                "Gemini request timed out after %.1fs for user: %s",
-                self._timeout,
-                user_id,
-            )
-            raise GeminiTimeoutError("Request to Gemini timed out.") from exc
-        except errors.APIError as exc:
-            code = getattr(exc, "code", None)
-            err_str = str(exc).upper()
-            if code == 429 or "RESOURCE_EXHAUSTED" in err_str or "QUOTA" in err_str:
-                logger.warning("Gemini rate limit exceeded for user %s: %s", user_id, exc)
-                raise GeminiRateLimitError("Rate limit exceeded.") from exc
-            logger.error("Gemini API error for user %s (code: %s): %s", user_id, code, exc)
-            raise GeminiAPIError(f"Gemini API returned error code {code}") from exc
-        except Exception as exc:
-            logger.error(
-                "Unexpected error communicating with Gemini for user %s: %s",
-                user_id,
-                exc,
-                exc_info=True,
-            )
-            raise GeminiError("Unexpected error communicating with Gemini.") from exc
+
+        response = await self._rate_limiter.execute_with_retry(
+            _call_gemini,
+            operation_name=f"generate_response (user {user_id})",
+        )
 
         # If tools are enabled, execute the tool calling loop
         if tools and tool_callback:
+            from src.tools.schemas import ToolCall, ToolResult
             iteration = 0
             while iteration < max_iterations:
                 iteration += 1
@@ -228,7 +224,7 @@ class GeminiClient:
                             call_args = {"raw_input": call_args}
                     tool_calls.append(ToolCall(call_id=call_id, tool_name=call_name, arguments=dict(call_args)))
 
-                # Execute requested tools via callback
+                # Execute requested tools via callback (executed once)
                 tool_results: list[ToolResult] = await tool_callback(tool_calls)
 
                 # Format function responses into Parts
@@ -241,22 +237,17 @@ class GeminiClient:
                         )
                     )
 
-                # Send function responses back to Gemini
-                try:
-                    response = await asyncio.wait_for(
+                # Send function responses back to Gemini with rate limiting and retry (without repeating tool callback)
+                async def _send_tool_feedback() -> Any:
+                    return await asyncio.wait_for(
                         chat.send_message(message=func_parts),
                         timeout=self._timeout,
                     )
-                except asyncio.TimeoutError as exc:
-                    logger.warning("Gemini request timed out during tool feedback for user %s", user_id)
-                    raise GeminiTimeoutError("Request to Gemini timed out during tool feedback.") from exc
-                except errors.APIError as exc:
-                    code = getattr(exc, "code", None)
-                    logger.error("Gemini API error during tool feedback for user %s (code: %s): %s", user_id, code, exc)
-                    raise GeminiAPIError(f"Gemini API returned error code {code}") from exc
-                except Exception as exc:
-                    logger.error("Unexpected error during tool feedback for user %s: %s", user_id, exc, exc_info=True)
-                    raise GeminiError(f"Unexpected error communicating with Gemini: {exc}") from exc
+
+                response = await self._rate_limiter.execute_with_retry(
+                    _send_tool_feedback,
+                    operation_name=f"tool_feedback_loop_iter_{iteration} (user {user_id})",
+                )
 
         # Extract text from response
         resp_text = getattr(response, "text", None)
@@ -277,3 +268,19 @@ class GeminiClient:
             raise GeminiAPIError("No response generated by Gemini.")
 
         return resp_text.strip()
+
+
+__all__ = [
+    "GeminiClient",
+    "GeminiError",
+    "GeminiTimeoutError",
+    "GeminiRateLimitError",
+    "GeminiServerError",
+    "GeminiAuthError",
+    "GeminiInvalidRequestError",
+    "GeminiAPIError",
+    "GeminiRateLimiter",
+    "classify_gemini_error",
+    "sanitize_secrets",
+]
+

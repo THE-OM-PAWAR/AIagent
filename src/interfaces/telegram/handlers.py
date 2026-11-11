@@ -26,9 +26,12 @@ from src.database.repositories.conversation_repo import ConversationRepository
 from src.database.session import get_async_session
 from src.intelligence.providers.gemini import (
     GeminiAPIError,
+    GeminiAuthError,
     GeminiClient,
     GeminiError,
+    GeminiInvalidRequestError,
     GeminiRateLimitError,
+    GeminiServerError,
     GeminiTimeoutError,
 )
 
@@ -425,6 +428,17 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"• *Authorized Users:* {allowed_count}",
         f"• *Environment:* `{config.environment if config else 'production'}`",
     ])
+
+    gemini_client: GeminiClient | None = context.bot_data.get("gemini_client")
+    if not gemini_client and orchestrator and getattr(orchestrator, "gemini_client", None):
+        gemini_client = getattr(orchestrator, "gemini_client")
+    if gemini_client and hasattr(gemini_client, "get_telemetry"):
+        telem = gemini_client.get_telemetry()
+        lines.append(
+            f"• *Gemini Telemetry:* {telem['successful_requests']}/{telem['total_requests']} reqs ok, "
+            f"{telem['rate_limit_events']} 429s, {telem['retries_performed']} retries (avg {telem['average_latency_seconds']}s)"
+        )
+
     status_report = "\n".join(lines)
     if update.message:
         await update.message.reply_text(status_report, parse_mode="Markdown")
@@ -572,29 +586,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         for chunk in chunks:
             await message.reply_text(chunk)
 
-    except GeminiRateLimitError:
-        logger.warning("Rate limit encountered for user %s", user.id)
-        await message.reply_text(
-            "⏳ The Gemini API rate limit has been reached. Please wait a moment before sending another message."
-        )
-    except GeminiTimeoutError:
-        logger.warning("Gemini timeout encountered for user %s", user.id)
-        await message.reply_text(
-            "⏱️ The request to Gemini timed out. Please try asking again."
-        )
-    except GeminiAPIError as err:
-        logger.error("Gemini API error for user %s: %s", user.id, err)
-        await message.reply_text(
-            "⚠️ An error occurred while generating the response. Please try again later."
-        )
-    except GeminiError as err:
-        logger.error("Gemini service error for user %s: %s", user.id, err)
-        await message.reply_text(
-            "⚠️ Service error encountered while communicating with Gemini."
-        )
     except Exception as exc:
-        logger.error("Unexpected error handling message for user %s: %s", user.id, exc, exc_info=True)
-        await message.reply_text("⚠️ An unexpected error occurred. Please try again.")
+        root_cause = getattr(exc, "__cause__", None) or getattr(exc, "original_error", None) or exc
+        if isinstance(root_cause, GeminiRateLimitError):
+            retry_note = f" (suggested retry in {int(root_cause.retry_after)}s)" if getattr(root_cause, "retry_after", None) else ""
+            logger.warning("Rate limit encountered for user %s%s", user.id, retry_note)
+            await message.reply_text(
+                f"⏳ The Gemini AI rate limit has been reached. Please wait a moment and try asking again.{retry_note}"
+            )
+        elif isinstance(root_cause, GeminiTimeoutError):
+            logger.warning("Gemini timeout encountered for user %s", user.id)
+            await message.reply_text(
+                "⏱️ The request to Gemini timed out. Please try asking again."
+            )
+        elif isinstance(root_cause, GeminiServerError):
+            logger.warning("Gemini server error for user %s: %s", user.id, root_cause)
+            await message.reply_text(
+                "🛠️ Google AI services are temporarily unavailable (5xx). Please try again in a moment."
+            )
+        elif isinstance(root_cause, GeminiAuthError):
+            logger.error("Gemini auth error for user %s: %s", user.id, root_cause)
+            await message.reply_text(
+                "🔑 AI service authentication error. Please contact the administrator."
+            )
+        elif isinstance(root_cause, GeminiInvalidRequestError):
+            logger.warning("Gemini invalid request for user %s: %s", user.id, root_cause)
+            await message.reply_text(
+                "⚠️ The request could not be processed due to invalid parameters or formatting."
+            )
+        elif isinstance(root_cause, (GeminiAPIError, GeminiError)):
+            logger.error("Gemini service error for user %s: %s", user.id, root_cause)
+            await message.reply_text(
+                "⚠️ Service error encountered while communicating with Gemini. Please try again later."
+            )
+        else:
+            logger.error("Unexpected error handling message for user %s: %s", user.id, exc, exc_info=True)
+            await message.reply_text("⚠️ An unexpected error occurred. Please try again.")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

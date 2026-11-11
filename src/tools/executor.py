@@ -57,6 +57,19 @@ class ToolExecutor:
         self.default_timeout = default_timeout
         self.max_output_chars = max_output_chars
         self.execution_tracker = execution_tracker
+        self._result_cache: dict[str, ToolResult] = {}
+
+    def clear_cache(self) -> None:
+        """Clear cached tool execution results."""
+        self._result_cache.clear()
+
+    def _store_and_return(self, result: ToolResult) -> ToolResult:
+        """Store tool result in memoization cache and return it."""
+        if result.call_id:
+            self._result_cache[result.call_id] = result
+            if len(self._result_cache) > 250:
+                self._result_cache.pop(next(iter(self._result_cache)))
+        return result
 
     async def execute_tool(
         self,
@@ -69,6 +82,12 @@ class ToolExecutor:
     ) -> ToolResult:
         """Execute a tool returning a structured ToolResult model."""
         actual_call_id = call_id or f"call_{int(time.time()*1000)}"
+
+        # If this call_id has already been executed, return cached result to prevent duplicate execution
+        if call_id and call_id in self._result_cache:
+            logger.info("ToolExecutor: returning cached result for existing call_id '%s'", call_id)
+            return self._result_cache[call_id]
+
         start_time = time.perf_counter()
 
         masked_args = mask_sensitive_arguments(arguments)
@@ -90,13 +109,13 @@ class ToolExecutor:
             await self._record_observability(
                 execution_record, actual_call_id, tool_name, "error", duration, err_msg, masked_args, 0
             )
-            return ToolResult(
+            return self._store_and_return(ToolResult(
                 call_id=actual_call_id,
                 tool_name=tool_name,
                 success=False,
                 error=err_msg,
                 execution_time_seconds=round(duration, 4),
-            )
+            ))
 
         # 2. Permission and policy verification
         is_allowed, denial_reason = self.permission_policy.check_permission(
@@ -114,13 +133,13 @@ class ToolExecutor:
             await self._record_observability(
                 execution_record, actual_call_id, tool_name, "blocked", duration, err_msg, masked_args, 0
             )
-            return ToolResult(
+            return self._store_and_return(ToolResult(
                 call_id=actual_call_id,
                 tool_name=tool_name,
                 success=False,
                 error=err_msg,
                 execution_time_seconds=round(duration, 4),
-            )
+            ))
 
         # 3. Strict argument validation against schema
         is_valid, validation_error = validate_arguments(definition.parameters_schema, arguments)
@@ -131,13 +150,13 @@ class ToolExecutor:
             await self._record_observability(
                 execution_record, actual_call_id, tool_name, "error", duration, err_msg, masked_args, 0
             )
-            return ToolResult(
+            return self._store_and_return(ToolResult(
                 call_id=actual_call_id,
                 tool_name=tool_name,
                 success=False,
                 error=err_msg,
                 execution_time_seconds=round(duration, 4),
-            )
+            ))
 
         # 4. Safe invocation with timeout
         timeout = definition.timeout_seconds if definition.timeout_seconds > 0 else self.default_timeout
@@ -171,14 +190,14 @@ class ToolExecutor:
                 execution_record, actual_call_id, tool_name, "success", duration, None, masked_args, result_size
             )
 
-            return ToolResult(
+            return self._store_and_return(ToolResult(
                 call_id=actual_call_id,
                 tool_name=tool_name,
                 success=True,
                 output=processed_result,
                 execution_time_seconds=round(duration, 4),
                 is_truncated=is_truncated,
-            )
+            ))
 
         except asyncio.TimeoutError:
             duration = time.perf_counter() - start_time
@@ -187,13 +206,13 @@ class ToolExecutor:
             await self._record_observability(
                 execution_record, actual_call_id, tool_name, "timeout", duration, err_msg, masked_args, 0
             )
-            return ToolResult(
+            return self._store_and_return(ToolResult(
                 call_id=actual_call_id,
                 tool_name=tool_name,
                 success=False,
                 error=err_msg,
                 execution_time_seconds=round(duration, 4),
-            )
+            ))
         except Exception as exc:
             duration = time.perf_counter() - start_time
             err_msg = f"Tool '{tool_name}' raised execution error: {exc}"
@@ -201,13 +220,13 @@ class ToolExecutor:
             await self._record_observability(
                 execution_record, actual_call_id, tool_name, "error", duration, err_msg, masked_args, 0
             )
-            return ToolResult(
+            return self._store_and_return(ToolResult(
                 call_id=actual_call_id,
                 tool_name=tool_name,
                 success=False,
                 error=err_msg,
                 execution_time_seconds=round(duration, 4),
-            )
+            ))
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Backward-compatible invocation method returning a dict with 'success', 'result', or 'error'."""
