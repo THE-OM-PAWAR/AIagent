@@ -28,7 +28,9 @@ class AnalystAgent(BaseAgent):
             "2. Comparative Tradeoff Analysis / Key Dimensions\n"
             "3. Technical and Operational Risks\n"
             "4. Actionable Strategic Recommendations.\n"
-            "Distinguish verified facts from assumptions, acknowledge unknowns, and be precise."
+            "Distinguish verified facts from assumptions, acknowledge unknowns, and be precise.\n"
+            "Format cleanly for Telegram: use bold text for headers instead of markdown hashes (#), "
+            "use bullet points (•) for lists, and avoid horizontal lines (---)."
         )
 
     async def execute(

@@ -19,6 +19,7 @@ def create_bot_app(
     gemini_client: GeminiClient,
     db_client: Any = None,
     orchestrator: AgentOrchestrator | None = None,
+    integration_registry: Any = None,
 ) -> Application:
     """Build and configure the Telegram bot Application with timeouts and dependencies.
 
@@ -27,6 +28,7 @@ def create_bot_app(
         gemini_client: Initialized GeminiClient instance.
         db_client: Optional legacy db_client instance.
         orchestrator: Optional AgentOrchestrator instance.
+        integration_registry: Optional IntegrationRegistry instance.
 
     Returns:
         Configured telegram.ext.Application ready for execution.
@@ -53,6 +55,8 @@ def create_bot_app(
     app.bot_data["config"] = config
     app.bot_data["gemini_client"] = gemini_client
     app.bot_data["orchestrator"] = orchestrator
+    if integration_registry is not None:
+        app.bot_data["integration_registry"] = integration_registry
     app.bot_data["start_time"] = time.time()
     register_handlers(app)
     return app

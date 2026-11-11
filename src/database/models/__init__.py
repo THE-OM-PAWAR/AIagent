@@ -3,6 +3,7 @@
 from src.database.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from src.database.models.conflict import MemoryConflictModel
 from src.database.models.conversation import ConversationModel, MessageModel
+from src.database.models.integration import IntegrationAuditLogModel, IntegrationCredentialModel
 from src.database.models.memory import MemoryModel
 from src.database.models.outbox import MemoryOutboxModel
 from src.database.models.relationship import MemoryRelationshipModel
@@ -19,5 +20,7 @@ __all__ = [
     "ConversationModel",
     "MessageModel",
     "WorkflowModel",
+    "IntegrationCredentialModel",
+    "IntegrationAuditLogModel",
 ]
 

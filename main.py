@@ -139,15 +139,66 @@ async def main() -> None:
             logger.warning("WorkflowEngine initialization failed (%s). Continuing without persistent workflows.", exc)
             workflow_engine = None
 
-    # Register Phase 2 & 3 built-in tools into orchestrator tool registry
+    # 5c. Initialize Integration Framework & Connectors
+    integration_registry = None
+    try:
+        from src.integrations.connectors.web_search import WebSearchConnector
+        from src.integrations.registry import IntegrationRegistry
+        from src.integrations.security.crypto import CredentialEncryptor
+
+        enc_key = config.integration_encryption_key or config.telegram_bot_token
+        encryptor = CredentialEncryptor(enc_key)
+        integration_registry = IntegrationRegistry(encryptor=encryptor)
+
+        # Register Web Search Connector
+        sys_search_key = config.tavily_api_key or config.brave_api_key
+        search_conn = WebSearchConnector(
+            default_provider=config.search_provider,
+            system_api_key=sys_search_key,
+        )
+        integration_registry.register_connector(search_conn)
+
+        # Register Google Workspace & Places Connectors
+        from src.integrations.connectors.calendar import GoogleCalendarConnector
+        from src.integrations.connectors.drive import GoogleDriveConnector
+        from src.integrations.connectors.gmail import GmailConnector
+        from src.integrations.connectors.google import GoogleOAuthClient, GoogleWorkspaceConnector
+        from src.integrations.connectors.maps import GooglePlacesConnector
+
+        google_oauth_client = GoogleOAuthClient(
+            client_id=config.google_client_id,
+            client_secret=config.google_client_secret,
+            redirect_uri=config.google_redirect_uri,
+        )
+        integration_registry.register_connector(GoogleWorkspaceConnector(oauth_client=google_oauth_client, database_url=config.database_url))
+        integration_registry.register_connector(GmailConnector(database_url=config.database_url))
+        integration_registry.register_connector(GoogleCalendarConnector(database_url=config.database_url))
+        integration_registry.register_connector(GoogleDriveConnector(database_url=config.database_url))
+        integration_registry.register_connector(GooglePlacesConnector(system_api_key=config.google_maps_api_key, database_url=config.database_url))
+
+        logger.info("Integration framework initialized with Web Search, Google Workspace, and Places connectors.")
+    except Exception as exc:
+        logger.warning("Integration framework initialization skipped (%s). Continuing in standard mode.", exc)
+        integration_registry = None
+
+    # Register Phase 2 & 3 built-in tools and external integration tools into registry
     orchestrator.tool_registry.register_builtin_tools(
         memory_manager=memory_manager,
         llm_manager=orchestrator.llm_manager,
         workflow_engine=workflow_engine,
+        integration_registry=integration_registry,
+        database_url=config.database_url,
+        system_search_key=config.tavily_api_key or config.brave_api_key,
+        google_maps_key=config.google_maps_api_key,
     )
 
     # 6. Build Telegram bot application with orchestrator injection
-    bot_app = create_bot_app(config, gemini_client, orchestrator=orchestrator)
+    bot_app = create_bot_app(
+        config,
+        gemini_client,
+        orchestrator=orchestrator,
+        integration_registry=integration_registry,
+    )
 
     # 5. Setup graceful shutdown handling
     stop_event = asyncio.Event()

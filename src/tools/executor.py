@@ -161,14 +161,23 @@ class ToolExecutor:
         # 4. Safe invocation with timeout
         timeout = definition.timeout_seconds if definition.timeout_seconds > 0 else self.default_timeout
         try:
+            call_kwargs = dict(arguments)
+            import inspect
+            try:
+                sig = inspect.signature(func)
+                if "user_id" in sig.parameters and "user_id" not in call_kwargs:
+                    call_kwargs["user_id"] = user_id
+            except (ValueError, TypeError):
+                pass
+
             if iscoroutinefunction(func):
                 raw_result = await asyncio.wait_for(
-                    func(**arguments),
+                    func(**call_kwargs),
                     timeout=timeout,
                 )
             else:
                 raw_result = await asyncio.wait_for(
-                    asyncio.to_thread(func, **arguments),
+                    asyncio.to_thread(func, **call_kwargs),
                     timeout=timeout,
                 )
 

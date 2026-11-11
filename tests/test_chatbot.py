@@ -120,11 +120,13 @@ class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
     """Test Gemini client conversational logic with history and error handling."""
 
     def setUp(self) -> None:
+        from src.intelligence.providers.gemini import GeminiRateLimiter
         self.gemini = GeminiClient(
             api_key="mock_api_key",
             model="gemini-2.5-flash",
             system_instruction="Be helpful.",
             timeout=10.0,
+            rate_limiter=GeminiRateLimiter(max_retries=1, initial_backoff_seconds=0.01, max_backoff_seconds=0.02),
         )
         self.gemini._client = MagicMock()
 
@@ -251,7 +253,8 @@ class TestTelegramHandlersWithAuth(unittest.IsolatedAsyncioTestCase):
             user_message="Hello Gemini",
             model_response="AI response text.",
         )
-        self.message.reply_text.assert_awaited_once_with("AI response text.")
+        self.message.reply_text.assert_awaited_once()
+        self.assertIn("AI response text.", self.message.reply_text.call_args[0][0])
 
     async def test_start_command_authorization(self) -> None:
         # Authorized

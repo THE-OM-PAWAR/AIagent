@@ -35,7 +35,9 @@ class ExecutorAgent(BaseAgent):
             "2. Break down into sequential Actionable Steps with status tags: [TODO], [IN_PROGRESS], [COMPLETED], or [BLOCKED]\n"
             "3. Identify Known Dependencies and Blockers\n"
             "4. Immediate Next Step.\n"
-            "Keep instructions practical, specific, and unambiguous."
+            "Keep instructions practical, specific, and unambiguous.\n"
+            "Format cleanly for Telegram: use bold text for headers instead of markdown hashes (#), "
+            "use bullet points (•) for lists, and avoid horizontal lines (---)."
         )
 
     def extract_actionable_tasks(self, response_text: str) -> list[str]:

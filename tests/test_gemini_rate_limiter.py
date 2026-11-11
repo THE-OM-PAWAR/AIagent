@@ -85,12 +85,31 @@ class TestGeminiErrorClassifierAndSanitizer(unittest.TestCase):
         exc = Exception("Rate limit exceeded. Please retry after 14.5s")
         self.assertEqual(parse_retry_after(exc), 14.5)
 
+        # From compound string (Google AI Studio actual error format)
+        exc_google = Exception(
+            "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, "
+            "description: Generate content requests per day limit exceeded on Free Tier. Please retry in 3h48m40.2s."
+        )
+        self.assertAlmostEqual(parse_retry_after(exc_google), 13720.2, places=1)
+
         # From headers
         mock_resp = MagicMock()
         mock_resp.headers = {"Retry-After": "25"}
         exc_with_resp = Exception("Error")
         exc_with_resp.response = mock_resp
         self.assertEqual(parse_retry_after(exc_with_resp), 25.0)
+
+    def test_classify_daily_quota_exhaustion(self) -> None:
+        msg = (
+            "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, "
+            "limit: 20, model: gemini-3.6-flash, description: Generate content requests per day limit exceeded on Free Tier.\n"
+            "Please retry in 3h48m40s."
+        )
+        exc = _make_api_error(429, msg, "RESOURCE_EXHAUSTED")
+        classified = classify_gemini_error(exc)
+        self.assertIsInstance(classified, GeminiRateLimitError)
+        self.assertTrue(classified.is_daily_quota)
+        self.assertAlmostEqual(classified.retry_after, 13720.0, places=0)
 
 
 class TestGeminiRateLimiter(unittest.IsolatedAsyncioTestCase):
@@ -123,6 +142,22 @@ class TestGeminiRateLimiter(unittest.IsolatedAsyncioTestCase):
         summary = limiter.telemetry.get_summary()
         self.assertEqual(summary["failed_requests"], 1)
         self.assertEqual(summary["retries_performed"], 0)
+
+    async def test_daily_quota_exhaustion_does_not_retry(self) -> None:
+        limiter = GeminiRateLimiter(rpm_limit=60, max_concurrency=2, max_retries=3)
+        msg = (
+            "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, "
+            "limit: 20, model: gemini-3.6-flash, description: Generate content requests per day limit exceeded on Free Tier.\n"
+            "Please retry in 3h48m40s."
+        )
+        exc = _make_api_error(429, msg, "RESOURCE_EXHAUSTED")
+        mock_op = AsyncMock(side_effect=exc)
+
+        with self.assertRaises(GeminiRateLimitError):
+            await limiter.execute_with_retry(mock_op, "test_daily")
+
+        # Must fail on attempt 1 immediately without wasting time retrying
+        self.assertEqual(mock_op.call_count, 1)
 
     async def test_retryable_429_recovers_after_retry(self) -> None:
         limiter = GeminiRateLimiter(
@@ -333,6 +368,38 @@ class TestTelegramHandlerErrorUnwrapping(unittest.IsolatedAsyncioTestCase):
         reply_call_arg = mock_update.message.reply_text.call_args[0][0]
         self.assertIn("rate limit has been reached", reply_call_arg)
         self.assertIn("12s", reply_call_arg)
+
+    async def test_wrapped_daily_quota_shows_hours_and_minutes(self) -> None:
+        from src.core.orchestrator import OrchestratorError
+        from src.interfaces.telegram.handlers import handle_message
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 101
+        mock_update.message.message_id = 999
+        mock_update.message.chat.id = 12345
+        mock_update.message.text = "Hello AI"
+        mock_update.message.reply_text = AsyncMock()
+
+        rate_err = GeminiRateLimitError("Daily quota exceeded", retry_after=13720.0, is_daily_quota=True)
+        wrapped_err = OrchestratorError("Generation failed")
+        wrapped_err.__cause__ = rate_err
+
+        mock_orch = AsyncMock()
+        mock_orch.process_message = AsyncMock(side_effect=wrapped_err)
+
+        mock_context = MagicMock()
+        mock_context.bot_data = {
+            "config": MagicMock(allowed_telegram_user_ids=[101]),
+            "orchestrator": mock_orch,
+        }
+
+        with patch("src.interfaces.telegram.handlers.is_authorized", return_value=True):
+            await handle_message(mock_update, mock_context)
+
+        mock_update.message.reply_text.assert_called_once()
+        reply_call_arg = mock_update.message.reply_text.call_args[0][0]
+        self.assertIn("Daily Quota Exceeded", reply_call_arg)
+        self.assertIn("3h 48m", reply_call_arg)
 
 
 if __name__ == "__main__":

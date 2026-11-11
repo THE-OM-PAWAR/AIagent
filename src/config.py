@@ -61,6 +61,14 @@ class Config:
     model_tier_small: str = "gemini-3.5-flash"
     model_tier_medium: str = "gemini-3.6-flash"
     model_tier_large: str = "gemini-3.6-flash"
+    integration_encryption_key: str | None = None
+    tavily_api_key: str | None = None
+    brave_api_key: str | None = None
+    search_provider: str = "tavily"
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
+    google_redirect_uri: str = "urn:ietf:wg:oauth:2.0:oob"
+    google_maps_api_key: str | None = None
 
     @classmethod
     def load(cls, env_file: str | Path | None = None) -> "Config":
@@ -177,6 +185,15 @@ class Config:
         model_tier_medium = os.getenv("MODEL_TIER_MEDIUM", gemini_model).strip()
         model_tier_large = os.getenv("MODEL_TIER_LARGE", "gemini-3.6-flash").strip()
 
+        integration_encryption_key = os.getenv("INTEGRATION_ENCRYPTION_KEY", "").strip() or None
+        tavily_api_key = os.getenv("TAVILY_API_KEY", "").strip() or None
+        brave_api_key = os.getenv("BRAVE_API_KEY", "").strip() or None
+        search_provider = os.getenv("SEARCH_PROVIDER", "tavily").strip().lower()
+        google_client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip() or None
+        google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip() or None
+        google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "urn:ietf:wg:oauth:2.0:oob").strip()
+        google_maps_api_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip() or None
+
         if errors:
             formatted_errors = "\n  - " + "\n  - ".join(errors)
             raise ConfigError(f"Configuration validation failed:{formatted_errors}")
@@ -202,4 +219,12 @@ class Config:
             model_tier_small=model_tier_small,
             model_tier_medium=model_tier_medium,
             model_tier_large=model_tier_large,
+            integration_encryption_key=integration_encryption_key,
+            tavily_api_key=tavily_api_key,
+            brave_api_key=brave_api_key,
+            search_provider=search_provider,
+            google_client_id=google_client_id,
+            google_client_secret=google_client_secret,
+            google_redirect_uri=google_redirect_uri,
+            google_maps_api_key=google_maps_api_key,
         )

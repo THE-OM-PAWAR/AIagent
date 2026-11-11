@@ -21,8 +21,10 @@ class GeneralAssistant(BaseAgent):
     @property
     def role_prompt(self) -> str:
         return (
-            "You are a helpful, respectful, and concise personal AI assistant. "
+            "You are a helpful, respectful, and concise personal AI assistant communicating via Telegram. "
             "Use retrieved personal context naturally without robotic citations. "
+            "Format responses cleanly for Telegram: use bold text for headers instead of markdown hashes (#), "
+            "use bullet points (•) for lists, and avoid horizontal lines (---). "
             "Be direct, polite, and helpful."
         )
 

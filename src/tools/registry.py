@@ -143,8 +143,12 @@ class ToolRegistry:
         llm_manager: Any = None,
         storage_root: Any = None,
         workflow_engine: Any = None,
+        integration_registry: Any = None,
+        database_url: str | None = None,
+        system_search_key: str | None = None,
+        google_maps_key: str | None = None,
     ) -> None:
-        """Convenience method to instantiate and register all built-in P0, P1, and P2 tools."""
+        """Convenience method to instantiate and register all built-in and external integration tools."""
         from src.tools.builtin.browser_automation import BrowserAutomationTool
         from src.tools.builtin.calculator import CalculatorTool
         from src.tools.builtin.conversion import ConversionTool
@@ -172,6 +176,52 @@ class ToolRegistry:
         # P2 tools
         self.register_tool(BrowserAutomationTool(output_dir="data/generated"))
 
+        # External Integrations (Web Search)
+        try:
+            from src.integrations.connectors.web_search import WebSearchTool
+            from src.integrations.connectors.web_search.providers.tavily import TavilySearchProvider
+
+            default_search_provider = TavilySearchProvider(api_key=system_search_key or "") if system_search_key else None
+            self.register_tool(
+                WebSearchTool(
+                    provider=default_search_provider,
+                    integration_registry=integration_registry,
+                    database_url=database_url,
+                )
+            )
+        except Exception as exc:
+            logger.debug("WebSearchTool registration skipped: %s", exc)
+
+        # External Integrations (Google Workspace: Gmail, Calendar, Drive)
+        try:
+            from src.integrations.connectors.calendar import get_calendar_tools
+            from src.integrations.connectors.drive import get_drive_tools
+            from src.integrations.connectors.gmail import get_gmail_tools
+
+            for tool in get_gmail_tools(integration_registry=integration_registry, database_url=database_url):
+                self.register_tool(tool)
+
+            for tool in get_calendar_tools(integration_registry=integration_registry, database_url=database_url):
+                self.register_tool(tool)
+
+            for tool in get_drive_tools(integration_registry=integration_registry, database_url=database_url):
+                self.register_tool(tool)
+        except Exception as exc:
+            logger.debug("Google Workspace tools registration skipped: %s", exc)
+
+        # External Integrations (Google Maps Places)
+        try:
+            from src.integrations.connectors.maps import get_maps_tools
+
+            for tool in get_maps_tools(
+                api_key=google_maps_key,
+                integration_registry=integration_registry,
+                database_url=database_url,
+            ):
+                self.register_tool(tool)
+        except Exception as exc:
+            logger.debug("Google Maps tools registration skipped: %s", exc)
+
         if memory_manager is not None:
             from src.tools.builtin.memory_tools import MemoryOperationsTool
             self.register_tool(MemoryOperationsTool(memory_manager=memory_manager))
@@ -182,7 +232,7 @@ class ToolRegistry:
 
         logger.info(
             "Registered built-in tools (calculator, datetime, text_processor, file_reader, web_page_reader, "
-            "conversion_tool, data_processor, document_generator, spreadsheet_analyzer, browser_automation%s%s)",
+            "conversion_tool, data_processor, document_generator, spreadsheet_analyzer, browser_automation, web_search%s%s)",
             ", memory_operations" if memory_manager else "",
             ", workflow_control" if workflow_engine else "",
         )

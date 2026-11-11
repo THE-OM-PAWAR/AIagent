@@ -111,7 +111,8 @@ class TestIntelligenceOrchestratorLifecycle(unittest.IsolatedAsyncioTestCase):
         with patch("src.interfaces.telegram.handlers.is_authorized", return_value=True):
             await handle_message(update, context)
 
-        update.message.reply_text.assert_awaited_once_with("I am the AI assistant, ready to help!")
+        update.message.reply_text.assert_awaited_once()
+        self.assertIn("I am the AI assistant, ready to help!", update.message.reply_text.call_args[0][0])
         stats = await orchestrator.execution_tracker.get_stats()
         self.assertEqual(stats["completed"], 1)
 

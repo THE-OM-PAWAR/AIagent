@@ -34,6 +34,28 @@ def sanitize_secrets(text: Any) -> str:
     return s
 
 
+def parse_duration_string(s: str) -> float | None:
+    """Parse duration like '13720s', '3h48m40s', '45m', '15s', '1.5s' into total seconds."""
+    s = s.strip()
+    sec_match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*s?", s)
+    if sec_match:
+        return float(sec_match.group(1))
+
+    comp_match = re.search(r"(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?", s)
+    if comp_match and any(comp_match.groups()):
+        h, m, sec = comp_match.groups()
+        total = 0.0
+        if h:
+            total += float(h) * 3600
+        if m:
+            total += float(m) * 60
+        if sec:
+            total += float(sec)
+        if total > 0:
+            return total
+    return None
+
+
 def parse_retry_after(exc: Exception) -> float | None:
     """Extract Retry-After header or duration from exception message/response."""
     # 1. Try response headers
@@ -48,14 +70,24 @@ def parse_retry_after(exc: Exception) -> float | None:
                 except ValueError:
                     pass
 
-    # 2. Try parsing from error message string (e.g. "Please retry after 15s" or "retry in 8.5s")
+    # 2. Try response_json or details (Google RPC RetryInfo)
+    response_json = getattr(exc, "response_json", None)
+    if isinstance(response_json, dict):
+        details = response_json.get("error", {}).get("details", [])
+        for d in details:
+            if isinstance(d, dict) and "retryDelay" in d:
+                dur = parse_duration_string(str(d["retryDelay"]))
+                if dur is not None:
+                    return dur
+
+    # 3. Try parsing from error message string (e.g. "Please retry in 3h48m40s" or "retry after 15s")
     msg = str(exc)
-    match = re.search(r"(?:retry\s+(?:in|after)\s+|wait\s+)(\d+(?:\.\d+)?)\s*s?", msg, re.IGNORECASE)
+    match = re.search(r"(?:retry\s+(?:in|after)\s+|wait\s+)([0-9hms\.\s]+)", msg, re.IGNORECASE)
     if match:
-        try:
-            return float(match.group(1))
-        except (ValueError, IndexError):
-            pass
+        dur = parse_duration_string(match.group(1))
+        if dur is not None:
+            return dur
+
     return None
 
 
@@ -72,9 +104,15 @@ class GeminiTimeoutError(GeminiError):
 class GeminiRateLimitError(GeminiError):
     """Raised when Gemini API rate limit or quota is exceeded (HTTP 429 / RESOURCE_EXHAUSTED)."""
 
-    def __init__(self, message: str = "Rate limit exceeded.", retry_after: float | None = None) -> None:
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded.",
+        retry_after: float | None = None,
+        is_daily_quota: bool = False,
+    ) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+        self.is_daily_quota = is_daily_quota
 
 
 class GeminiServerError(GeminiError):
@@ -127,9 +165,16 @@ def classify_gemini_error(exc: Exception) -> GeminiError:
 
         # 429 / Rate Limit
         if code == 429 or "RESOURCE_EXHAUSTED" in status or "QUOTA" in sanitized_msg.upper() or "RATE LIMIT" in sanitized_msg.upper():
+            is_daily = (
+                "per day limit exceeded" in sanitized_msg.lower()
+                or "daily limit" in sanitized_msg.lower()
+                or "free_tier_requests" in sanitized_msg.lower()
+                or (retry_after is not None and retry_after > 300)
+            )
             return GeminiRateLimitError(
                 message=f"Gemini API rate limit or quota exceeded: {sanitized_msg}",
                 retry_after=retry_after,
+                is_daily_quota=is_daily,
             )
 
         # 401 / 403 Auth Error
@@ -276,7 +321,13 @@ class GeminiRateLimiter:
 
     def _is_retryable(self, exc: Exception) -> bool:
         """Determine if an error is transient and safe to retry."""
-        if isinstance(exc, (GeminiRateLimitError, GeminiServerError, GeminiTimeoutError)):
+        if isinstance(exc, GeminiRateLimitError):
+            if exc.is_daily_quota:
+                return False
+            if exc.retry_after is not None and exc.retry_after > self.max_backoff:
+                return False
+            return True
+        if isinstance(exc, (GeminiServerError, GeminiTimeoutError)):
             return True
         return False
 
