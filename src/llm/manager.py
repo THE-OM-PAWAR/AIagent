@@ -1,11 +1,14 @@
 """LLM Provider Manager orchestrating providers, model tiers, and fallbacks."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import logging
 from typing import Any
+
 from src.llm.base import BaseLLMProvider, LLMResponse, ModelTier
 from src.llm.providers.gemini import GeminiProvider
 from src.llm.router import ModelRouter
+from src.tools.schemas import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,9 @@ class LLMManager:
         system_instruction: str | None = None,
         timeout: float = 60.0,
         user_id: int = 101,
+        tools: list[Any] | None = None,
+        tool_callback: Callable[[list[ToolCall]], Awaitable[list[ToolResult]]] | None = None,
+        max_iterations: int = 5,
     ) -> LLMResponse:
         """Execute model generation with automatic fallback if primary model fails."""
         current_tier = tier
@@ -50,10 +56,11 @@ class LLMManager:
             attempted_tiers.append(current_tier)
             model_name = self.router.resolve_model_name(current_tier)
             logger.info(
-                "LLMManager: invoking provider='%s', tier='%s', model='%s'",
+                "LLMManager: invoking provider='%s', tier='%s', model='%s' (tools=%s)",
                 self.provider.provider_name,
                 current_tier.value,
                 model_name,
+                len(tools) if tools else 0,
             )
 
             try:
@@ -64,6 +71,9 @@ class LLMManager:
                     timeout=timeout,
                     tier=current_tier,
                     user_id=user_id,
+                    tools=tools,
+                    tool_callback=tool_callback,
+                    max_iterations=max_iterations,
                 )
 
                 # Record metrics

@@ -5,9 +5,12 @@ from collections import deque
 from contextlib import asynccontextmanager
 import logging
 from collections.abc import AsyncGenerator
+from pathlib import Path
+import re
 import time
 
-from telegram import Update
+from unittest.mock import MagicMock
+from telegram import Document, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -478,11 +481,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     chat = update.effective_chat
 
-    if not message or not message.text or not user or not chat:
+    if not message or not user or not chat:
         return
 
-    user_text = message.text.strip()
-    if not user_text:
+    # Handle document attachment or text message
+    doc = getattr(message, "document", None)
+    is_doc = False
+    if doc is not None:
+        if isinstance(doc, Document):
+            is_doc = True
+        elif not isinstance(doc, MagicMock) or isinstance(getattr(doc, "file_name", None), str):
+            is_doc = True
+
+    if is_doc and doc is not None:
+        raw_name = getattr(doc, "file_name", None)
+        file_name = raw_name if isinstance(raw_name, str) else "uploaded_file"
+        safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file_name)
+        file_size = getattr(doc, "file_size", 0) or 0
+        if file_size > 20 * 1024 * 1024:
+            await message.reply_text("⚠️ File is too large. Maximum supported upload size is 20MB.")
+            return
+
+        upload_dir = Path("data/uploads") / str(user.id)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        target_path = upload_dir / safe_name
+
+        try:
+            tg_file = await doc.get_file()
+            await tg_file.download_to_drive(custom_path=str(target_path))
+            caption = getattr(message, "caption", None) or "Please analyze this uploaded document."
+            rel_path = f"{user.id}/{safe_name}"
+            user_text = (
+                f"[Uploaded Document: {rel_path} ({file_size} bytes)]\n"
+                f"User request: {caption}"
+            )
+            logger.info("Saved uploaded document %s (%d bytes) for user %s", rel_path, file_size, user.id)
+        except Exception as exc:
+            logger.error("Failed to download Telegram document: %s", exc)
+            await message.reply_text(f"⚠️ Failed to process uploaded document: {exc}")
+            return
+    elif getattr(message, "text", None):
+        user_text = message.text.strip()
+        if not user_text:
+            return
+    else:
         return
 
     # 3. Resolve or initialize Agent Orchestrator
@@ -569,6 +611,6 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("reset", clear_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
     logger.info("Telegram command and message handlers registered.")

@@ -1,10 +1,16 @@
 """Google Gemini API client and conversational session management provider."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
+import json
 import logging
 from typing import Any
+import uuid
+
 from google import genai
 from google.genai import errors, types
+
+from src.tools.schemas import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -107,32 +113,30 @@ class GeminiClient:
         message_text: str,
         history: list[dict[str, Any]] | None = None,
         system_instruction: str | None = None,
+        tools: list[Any] | None = None,
+        tool_callback: Callable[[list[ToolCall]], Awaitable[list[ToolResult]]] | None = None,
+        max_iterations: int = 5,
     ) -> str:
-        """Send a user message to Gemini within their conversational context.
+        """Send a user message to Gemini with optional tool calling support.
 
         Args:
             user_id: Telegram user ID.
             message_text: The user's input text.
             history: Optional list of previous message dictionaries with 'role' and 'content'.
             system_instruction: Optional dynamic system instruction override with RAG context.
+            tools: Optional list of google.genai.types.Tool objects.
+            tool_callback: Async callback invoked when Gemini requests tool execution.
+            max_iterations: Maximum function calling loop iterations.
 
         Returns:
             Generated response string from Gemini.
-
-        Raises:
-            GeminiTimeoutError: If the Gemini request exceeds timeout.
-            GeminiRateLimitError: If rate limit or quota is exhausted.
-            GeminiAPIError: If the API returns an error or empty content.
-            GeminiError: On unexpected exceptions.
         """
         effective_instruction = system_instruction or self._system_instruction
 
+        # Prepare history contents
+        history_contents: list[types.Content] = []
         if history is not None:
-            # Build conversation history from persisted records
-            history_contents: list[types.Content] = []
             valid_history = list(history)
-
-            # Ensure history starts with a user turn if present
             while valid_history and valid_history[0].get("role") == "model":
                 valid_history = valid_history[1:]
 
@@ -147,9 +151,17 @@ class GeminiClient:
                         )
                     )
 
-            config = types.GenerateContentConfig(
-                system_instruction=effective_instruction,
-            )
+        # Build config with tools if provided
+        config_kwargs: dict[str, Any] = {
+            "system_instruction": effective_instruction,
+        }
+        if tools:
+            config_kwargs["tools"] = tools
+            config_kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
+
+        config = types.GenerateContentConfig(**config_kwargs)
+
+        if history is not None or tools:
             chat = self.client.aio.chats.create(
                 model=self._model,
                 config=config,
@@ -187,7 +199,76 @@ class GeminiClient:
             )
             raise GeminiError("Unexpected error communicating with Gemini.") from exc
 
-        if not response or not response.text:
+        # If tools are enabled, execute the tool calling loop
+        if tools and tool_callback:
+            iteration = 0
+            while iteration < max_iterations:
+                iteration += 1
+                function_calls = getattr(response, "function_calls", None)
+                if not function_calls:
+                    # Model provided text, finished
+                    break
+
+                logger.info(
+                    "GeminiClient: user %s triggered %d function call(s) at iteration %d",
+                    user_id,
+                    len(function_calls),
+                    iteration,
+                )
+
+                tool_calls: list[ToolCall] = []
+                for fc in function_calls:
+                    call_id = getattr(fc, "id", None) or f"call_{uuid.uuid4().hex[:8]}"
+                    call_name = getattr(fc, "name", "")
+                    call_args = getattr(fc, "args", {}) or {}
+                    if isinstance(call_args, str):
+                        try:
+                            call_args = json.loads(call_args)
+                        except Exception:
+                            call_args = {"raw_input": call_args}
+                    tool_calls.append(ToolCall(call_id=call_id, tool_name=call_name, arguments=dict(call_args)))
+
+                # Execute requested tools via callback
+                tool_results: list[ToolResult] = await tool_callback(tool_calls)
+
+                # Format function responses into Parts
+                func_parts: list[types.Part] = []
+                for res in tool_results:
+                    func_parts.append(
+                        types.Part.from_function_response(
+                            name=res.tool_name,
+                            response=res.to_dict(),
+                        )
+                    )
+
+                # Send function responses back to Gemini
+                try:
+                    response = await asyncio.wait_for(
+                        chat.send_message(message=func_parts),
+                        timeout=self._timeout,
+                    )
+                except asyncio.TimeoutError as exc:
+                    logger.warning("Gemini request timed out during tool feedback for user %s", user_id)
+                    raise GeminiTimeoutError("Request to Gemini timed out during tool feedback.") from exc
+                except errors.APIError as exc:
+                    code = getattr(exc, "code", None)
+                    logger.error("Gemini API error during tool feedback for user %s (code: %s): %s", user_id, code, exc)
+                    raise GeminiAPIError(f"Gemini API returned error code {code}") from exc
+                except Exception as exc:
+                    logger.error("Unexpected error during tool feedback for user %s: %s", user_id, exc, exc_info=True)
+                    raise GeminiError(f"Unexpected error communicating with Gemini: {exc}") from exc
+
+        # Extract text from response
+        resp_text = getattr(response, "text", None)
+        if not resp_text:
+            # Fallback: check candidates
+            if response and response.candidates and response.candidates[0].content:
+                parts = response.candidates[0].content.parts or []
+                text_parts = [p.text for p in parts if getattr(p, "text", None)]
+                if text_parts:
+                    resp_text = "".join(text_parts)
+
+        if not resp_text or not resp_text.strip():
             logger.warning(
                 "Gemini returned empty or blocked response for user %s. Response: %s",
                 user_id,
@@ -195,5 +276,4 @@ class GeminiClient:
             )
             raise GeminiAPIError("No response generated by Gemini.")
 
-        return response.text
-
+        return resp_text.strip()

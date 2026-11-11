@@ -32,6 +32,9 @@ from src.intelligence.providers.gemini import (
 )
 from src.llm import GeminiProvider, LLMManager, ModelRouter, ModelTier
 from src.memory.manager import MemoryManager
+from src.tools.executor import ToolExecutor
+from src.tools.permissions import PermissionPolicy
+from src.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,10 @@ class IntelligenceOrchestrator:
         system_prompt: str | None = None,
         context_builder: IntelligentContextBuilder | None = None,
         model_name: str | None = None,
+        tool_registry: ToolRegistry | None = None,
+        tool_executor: ToolExecutor | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        execution_loop: Any | None = None,
     ) -> None:
         self.gemini_client = gemini_client
         self.database_url = database_url
@@ -75,6 +82,20 @@ class IntelligenceOrchestrator:
             system_prompt=self.system_prompt,
         )
 
+        # Reliability and Concurrency Controls
+        self.lock_manager = ConversationLockManager()
+        self.execution_tracker = ExecutionTracker()
+        self.deduplicator = UpdateDeduplicator()
+
+        # Tool System Initialization (empty by default unless tools are explicitly provided)
+        self.tool_registry = tool_registry or ToolRegistry()
+        self.permission_policy = permission_policy or PermissionPolicy()
+        self.tool_executor = tool_executor or ToolExecutor(
+            registry=self.tool_registry,
+            permission_policy=self.permission_policy,
+            execution_tracker=self.execution_tracker,
+        )
+
         # Multi-Agent and Model Routing Infrastructure
         self.llm_provider = GeminiProvider(self.gemini_client)
         self.model_router = ModelRouter(
@@ -83,17 +104,24 @@ class IntelligenceOrchestrator:
             large_model=self.model_name,
         )
         self.llm_manager = LLMManager(self.llm_provider, self.model_router)
+
+        # Shared Tool Execution Loop
+        if execution_loop is None:
+            from src.core.execution_loop import ExecutionLoop
+            self.execution_loop = ExecutionLoop(
+                tool_registry=self.tool_registry,
+                tool_executor=self.tool_executor,
+                execution_tracker=self.execution_tracker,
+            )
+        else:
+            self.execution_loop = execution_loop
+
         self.agent_router = AgentRouter()
         self.agents: dict[AgentType, BaseAgent] = {
-            AgentType.GENERAL: GeneralAssistant(self.llm_manager, self.memory_manager),
-            AgentType.ANALYST: AnalystAgent(self.llm_manager, self.memory_manager),
-            AgentType.EXECUTOR: ExecutorAgent(self.llm_manager, self.memory_manager),
+            AgentType.GENERAL: GeneralAssistant(self.llm_manager, self.memory_manager, execution_loop=self.execution_loop),
+            AgentType.ANALYST: AnalystAgent(self.llm_manager, self.memory_manager, execution_loop=self.execution_loop),
+            AgentType.EXECUTOR: ExecutorAgent(self.llm_manager, self.memory_manager, execution_loop=self.execution_loop),
         }
-
-        # Reliability and Concurrency Controls
-        self.lock_manager = ConversationLockManager()
-        self.execution_tracker = ExecutionTracker()
-        self.deduplicator = UpdateDeduplicator()
 
         # Track active background tasks to prevent garbage collection
         self._background_tasks: set[asyncio.Task[Any]] = set()
@@ -232,6 +260,7 @@ class IntelligenceOrchestrator:
                     user_text=clean_text,
                     user_id=user_id,
                     project_id=active_project,
+                    execution_record=exec_rec,
                 )
                 response_text = agent_result.response_text
                 exec_rec.model_name = agent_result.model_used
@@ -260,10 +289,11 @@ class IntelligenceOrchestrator:
             gen_duration = time.perf_counter() - start_gen
 
             logger.info(
-                "Orchestrator [%s]: response generated (chars=%d, duration=%.2fs)",
+                "Orchestrator [%s]: response generated (chars=%d, duration=%.2fs, tools_called=%d)",
                 exec_rec.execution_id,
                 len(clean_response),
                 gen_duration,
+                len(agent_result.tool_calls),
             )
 
             # 9. Persist conversation turn in database
@@ -296,7 +326,6 @@ class IntelligenceOrchestrator:
                     )
 
             # 10. Background memory extraction & update
-            # Memory extraction runs safely in background without blocking or jeopardizing response delivery
             if self.memory_manager:
                 task = asyncio.create_task(
                     self._safe_background_memory_extraction(
@@ -338,7 +367,6 @@ class IntelligenceOrchestrator:
             )
             logger.debug("Orchestrator [%s]: background memory extraction finished.", exec_id)
         except Exception as exc:
-            # Failed memory extraction must NEVER corrupt conversation or cause failure
             logger.warning(
                 "Orchestrator [%s]: background memory extraction encountered error (non-fatal): %s",
                 exec_id,

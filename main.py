@@ -115,6 +115,11 @@ async def main() -> None:
         system_prompt=config.gemini_system_instruction,
         model_name=config.gemini_model,
     )
+    # Register Phase 2 built-in tools into orchestrator tool registry
+    orchestrator.tool_registry.register_builtin_tools(
+        memory_manager=memory_manager,
+        llm_manager=orchestrator.llm_manager,
+    )
 
     # 6. Build Telegram bot application with orchestrator injection
     bot_app = create_bot_app(config, gemini_client, orchestrator=orchestrator)

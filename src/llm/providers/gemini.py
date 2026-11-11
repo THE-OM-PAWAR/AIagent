@@ -1,11 +1,11 @@
 """Google Gemini provider adapter implementing BaseLLMProvider."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import logging
 import time
 from typing import Any
 
-from src.agent.context.token_budget import TokenEstimator
 from src.intelligence.providers.gemini import (
     GeminiAPIError,
     GeminiClient,
@@ -14,6 +14,7 @@ from src.intelligence.providers.gemini import (
     GeminiTimeoutError,
 )
 from src.llm.base import BaseLLMProvider, LLMResponse, ModelTier
+from src.tools.schemas import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ class GeminiProvider(BaseLLMProvider):
 
     def __init__(self, gemini_client: GeminiClient | Any) -> None:
         self._client = gemini_client
+        # Lazy import TokenEstimator to avoid cross-package circular imports
+        from src.agent.context.token_budget import TokenEstimator
         self._estimator = TokenEstimator()
 
     @property
@@ -60,8 +63,11 @@ class GeminiProvider(BaseLLMProvider):
         timeout: float = 60.0,
         tier: ModelTier = ModelTier.MEDIUM,
         user_id: int = 101,
+        tools: list[Any] | None = None,
+        tool_callback: Callable[[list[ToolCall]], Awaitable[list[ToolResult]]] | None = None,
+        max_iterations: int = 5,
     ) -> LLMResponse:
-        """Invoke Gemini with messages, system instruction, and token/cost tracking."""
+        """Invoke Gemini with messages, system instruction, and optional tools."""
         start_t = time.perf_counter()
 
         # Separate history turns from current user message
@@ -95,22 +101,28 @@ class GeminiProvider(BaseLLMProvider):
             if original_model and original_model != model_name:
                 self._client._model = model_name
 
-            # Invoke GeminiClient
-            kwargs = {}
-            # Only pass system_instruction override if dynamic context facts or specialized agent prompts are present
-            has_dynamic_context = effective_sys and any(
-                tag in effective_sys
-                for tag in [
-                    "[USER FACTS",
-                    "[PROJECT",
-                    "[ACTIVE TASKS",
-                    "[CONVERSATION SUMMARY",
-                    "Senior Technical and Strategic",
-                    "Execution and Implementation",
-                ]
-            )
-            if has_dynamic_context:
-                if hasattr(self._client, "generate_response"):
+            # Configure invocation keyword arguments
+            kwargs: dict[str, Any] = {}
+            if tools is not None:
+                kwargs["tools"] = tools
+                if tool_callback is not None:
+                    kwargs["tool_callback"] = tool_callback
+                kwargs["max_iterations"] = max_iterations
+                if effective_sys:
+                    kwargs["system_instruction"] = effective_sys
+            elif effective_sys:
+                has_dynamic_context = any(
+                    tag in effective_sys
+                    for tag in [
+                        "[USER FACTS",
+                        "[PROJECT",
+                        "[ACTIVE TASKS",
+                        "[CONVERSATION SUMMARY",
+                        "Senior Technical and Strategic",
+                        "Execution and Implementation",
+                    ]
+                )
+                if has_dynamic_context and hasattr(self._client, "generate_response"):
                     import inspect
                     sig = inspect.signature(self._client.generate_response)
                     accepts_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())

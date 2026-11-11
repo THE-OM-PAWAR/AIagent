@@ -1,10 +1,13 @@
 """Base schemas and abstractions for the LLM Layer."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from enum import Enum
 import time
 from typing import Any
 from pydantic import BaseModel, Field
+
+from src.tools.schemas import ToolCall, ToolResult
 
 
 class ModelTier(str, Enum):
@@ -32,6 +35,7 @@ class LLMResponse(BaseModel):
     latency_seconds: float = 0.0
     estimated_cost_usd: float = 0.0
     fallback_used: bool = False
+    tool_calls_executed: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -53,8 +57,11 @@ class BaseLLMProvider(ABC):
         timeout: float = 60.0,
         tier: ModelTier = ModelTier.MEDIUM,
         user_id: int = 101,
+        tools: list[Any] | None = None,
+        tool_callback: Callable[[list[ToolCall]], Awaitable[list[ToolResult]]] | None = None,
+        max_iterations: int = 5,
     ) -> LLMResponse:
-        """Generate a response given conversation turns and system instruction."""
+        """Generate a response given conversation turns, system instruction, and optional tools."""
         pass
 
     @abstractmethod

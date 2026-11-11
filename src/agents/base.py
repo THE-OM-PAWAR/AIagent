@@ -2,13 +2,15 @@
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from src.agent.context.builder import ConstructedContext
 from src.llm.base import ModelTier
-from src.llm.manager import LLMManager
 from src.memory.manager import MemoryManager
+
+if TYPE_CHECKING:
+    from src.llm.manager import LLMManager
 
 
 class AgentType(str, Enum):
@@ -28,6 +30,7 @@ class AgentResult(BaseModel):
     latency_seconds: float = 0.0
     estimated_cost_usd: float = 0.0
     task_updates: list[dict[str, Any]] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -36,11 +39,17 @@ class BaseAgent(ABC):
 
     def __init__(
         self,
-        llm_manager: LLMManager,
+        llm_manager: Any,
         memory_manager: MemoryManager | None = None,
+        execution_loop: Any | None = None,
     ) -> None:
         self.llm_manager = llm_manager
         self.memory_manager = memory_manager
+        if execution_loop is None:
+            from src.core.execution_loop import ExecutionLoop
+            self.execution_loop = ExecutionLoop()
+        else:
+            self.execution_loop = execution_loop
 
     @property
     @abstractmethod
@@ -54,6 +63,11 @@ class BaseAgent(ABC):
         """Specialized system prompt instructions for this agent role."""
         pass
 
+    @property
+    def allowed_tools(self) -> list[str] | None:
+        """List of allowed tool names for this agent, or None for all."""
+        return None
+
     @abstractmethod
     async def execute(
         self,
@@ -61,7 +75,7 @@ class BaseAgent(ABC):
         user_text: str,
         user_id: int,
         project_id: str | None = None,
+        execution_record: Any = None,
     ) -> AgentResult:
         """Execute the agent's designated responsibility within shared context."""
         pass
-

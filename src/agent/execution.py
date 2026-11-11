@@ -12,6 +12,18 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 
+class ToolExecutionRecord(BaseModel):
+    """Execution telemetry for a single tool invocation."""
+    tool_call_id: str
+    tool_name: str
+    status: str  # 'success', 'error', 'timeout', 'blocked'
+    duration_seconds: float
+    error_message: str | None = None
+    arguments_summary: str = ""
+    result_size_bytes: int = 0
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
 class ExecutionRecord(BaseModel):
     """Detailed metadata and metrics for an individual request execution."""
     execution_id: str
@@ -26,6 +38,7 @@ class ExecutionRecord(BaseModel):
     model_name: str = "gemini-3.6-flash"
     degraded_reasons: list[str] = Field(default_factory=list)
     error_message: str | None = None
+    tool_calls: list[ToolExecutionRecord] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -83,8 +96,33 @@ class ExecutionTracker:
         record.status = "failed"
         record.error_message = error_message
 
+    async def record_tool_execution(
+        self,
+        record: ExecutionRecord | None,
+        tool_call_id: str,
+        tool_name: str,
+        status: str,
+        duration_seconds: float,
+        error_message: str | None = None,
+        arguments_summary: str = "",
+        result_size_bytes: int = 0,
+    ) -> ToolExecutionRecord:
+        """Record a tool invocation under the active execution record."""
+        tool_rec = ToolExecutionRecord(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            status=status,
+            duration_seconds=round(duration_seconds, 4),
+            error_message=error_message,
+            arguments_summary=arguments_summary,
+            result_size_bytes=result_size_bytes,
+        )
+        if record:
+            record.tool_calls.append(tool_rec)
+        return tool_rec
+
     async def get_stats(self) -> dict[str, Any]:
-        """Aggregate summary metrics across recent executions."""
+        """Aggregate summary metrics across recent executions including tools."""
         async with self._lock:
             total = len(self._records)
             if total == 0:
@@ -94,6 +132,9 @@ class ExecutionTracker:
                     "degraded": 0,
                     "failed": 0,
                     "avg_duration_seconds": 0.0,
+                    "total_tool_calls": 0,
+                    "successful_tool_calls": 0,
+                    "failed_tool_calls": 0,
                 }
             completed = sum(1 for r in self._records if r.status == "completed")
             degraded = sum(1 for r in self._records if r.status == "degraded")
@@ -101,12 +142,19 @@ class ExecutionTracker:
             durations = [r.duration_seconds for r in self._records if r.duration_seconds is not None]
             avg_duration = sum(durations) / len(durations) if durations else 0.0
 
+            all_tool_calls = [tc for r in self._records for tc in r.tool_calls]
+            tool_success = sum(1 for tc in all_tool_calls if tc.status == "success")
+            tool_failed = sum(1 for tc in all_tool_calls if tc.status in ("error", "timeout", "blocked"))
+
             return {
                 "total_executions": total,
                 "completed": completed,
                 "degraded": degraded,
                 "failed": failed,
                 "avg_duration_seconds": round(avg_duration, 4),
+                "total_tool_calls": len(all_tool_calls),
+                "successful_tool_calls": tool_success,
+                "failed_tool_calls": tool_failed,
             }
 
 
@@ -148,4 +196,3 @@ class UpdateDeduplicator:
                 oldest = self._order.popleft()
                 self._seen.discard(oldest)
             return False
-
