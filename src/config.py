@@ -69,6 +69,11 @@ class Config:
     google_client_secret: str | None = None
     google_redirect_uri: str = "urn:ietf:wg:oauth:2.0:oob"
     google_maps_api_key: str | None = None
+    calendly_client_id: str | None = None
+    calendly_client_secret: str | None = None
+    calendly_redirect_uri: str = "urn:ietf:wg:oauth:2.0:oob"
+    calendly_api_key: str | None = None
+    calendly_webhook_signing_key: str | None = None
 
     @classmethod
     def load(cls, env_file: str | Path | None = None) -> "Config":
@@ -193,6 +198,11 @@ class Config:
         google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip() or None
         google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "urn:ietf:wg:oauth:2.0:oob").strip()
         google_maps_api_key = os.getenv("GOOGLE_MAPS_API_KEY", "").strip() or None
+        calendly_client_id = os.getenv("CALENDLY_CLIENT_ID", "").strip() or None
+        calendly_client_secret = os.getenv("CALENDLY_CLIENT_SECRET", "").strip() or None
+        calendly_redirect_uri = os.getenv("CALENDLY_REDIRECT_URI", "urn:ietf:wg:oauth:2.0:oob").strip()
+        calendly_api_key = os.getenv("CALENDLY_API_KEY", "").strip() or None
+        calendly_webhook_signing_key = os.getenv("CALENDLY_WEBHOOK_SIGNING_KEY", "").strip() or None
 
         if errors:
             formatted_errors = "\n  - " + "\n  - ".join(errors)
@@ -227,4 +237,9 @@ class Config:
             google_client_secret=google_client_secret,
             google_redirect_uri=google_redirect_uri,
             google_maps_api_key=google_maps_api_key,
+            calendly_client_id=calendly_client_id,
+            calendly_client_secret=calendly_client_secret,
+            calendly_redirect_uri=calendly_redirect_uri,
+            calendly_api_key=calendly_api_key,
+            calendly_webhook_signing_key=calendly_webhook_signing_key,
         )

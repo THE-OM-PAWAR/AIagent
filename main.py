@@ -1,5 +1,6 @@
 """Asynchronous application entry point for the Telegram AI Assistant."""
 
+import utils.session
 import asyncio
 import signal
 import sys
@@ -158,8 +159,9 @@ async def main() -> None:
         )
         integration_registry.register_connector(search_conn)
 
-        # Register Google Workspace & Places Connectors
+        # Register Google Workspace, Places, and Calendly Connectors
         from src.integrations.connectors.calendar import GoogleCalendarConnector
+        from src.integrations.connectors.calendly import CalendlyConnector, CalendlyOAuthClient
         from src.integrations.connectors.drive import GoogleDriveConnector
         from src.integrations.connectors.gmail import GmailConnector
         from src.integrations.connectors.google import GoogleOAuthClient, GoogleWorkspaceConnector
@@ -170,13 +172,20 @@ async def main() -> None:
             client_secret=config.google_client_secret,
             redirect_uri=config.google_redirect_uri,
         )
+        calendly_oauth_client = CalendlyOAuthClient(
+            client_id=config.calendly_client_id,
+            client_secret=config.calendly_client_secret,
+            redirect_uri=config.calendly_redirect_uri,
+        )
+
         integration_registry.register_connector(GoogleWorkspaceConnector(oauth_client=google_oauth_client, database_url=config.database_url))
         integration_registry.register_connector(GmailConnector(database_url=config.database_url))
         integration_registry.register_connector(GoogleCalendarConnector(database_url=config.database_url))
         integration_registry.register_connector(GoogleDriveConnector(database_url=config.database_url))
         integration_registry.register_connector(GooglePlacesConnector(system_api_key=config.google_maps_api_key, database_url=config.database_url))
+        integration_registry.register_connector(CalendlyConnector(oauth_client=calendly_oauth_client, system_api_key=config.calendly_api_key, database_url=config.database_url))
 
-        logger.info("Integration framework initialized with Web Search, Google Workspace, and Places connectors.")
+        logger.info("Integration framework initialized with Web Search, Google Workspace, Places, and Calendly connectors.")
     except Exception as exc:
         logger.warning("Integration framework initialization skipped (%s). Continuing in standard mode.", exc)
         integration_registry = None
@@ -190,6 +199,7 @@ async def main() -> None:
         database_url=config.database_url,
         system_search_key=config.tavily_api_key or config.brave_api_key,
         google_maps_key=config.google_maps_api_key,
+        calendly_token=config.calendly_api_key,
     )
 
     # 6. Build Telegram bot application with orchestrator injection

@@ -16,6 +16,7 @@ from src.integrations.errors import (
     ProviderUnavailableError,
     RateLimitError,
 )
+from src.integrations.http_client import IntegrationHttpClient
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,18 @@ class GmailClient:
         self,
         access_token: str,
         timeout: float = 15.0,
+        http_client: IntegrationHttpClient | None = None,
     ) -> None:
         self.access_token = access_token.strip()
         self.timeout = timeout
+        self.http_client = http_client or IntegrationHttpClient(
+            provider_id="gmail",
+            read_timeout=timeout,
+        )
+
+    def get_telemetry(self) -> dict[str, Any]:
+        """Return production HTTP metrics and latency for Gmail."""
+        return self.http_client.get_telemetry()
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -93,32 +103,31 @@ class GmailClient:
 
         start = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{GMAIL_API_BASE}/profile", headers=self._headers)
-                latency = round((time.perf_counter() - start) * 1000.0, 1)
+            resp = await self.http_client.get(f"{GMAIL_API_BASE}/profile", headers=self._headers, timeout=10.0)
+            latency = round((time.perf_counter() - start) * 1000.0, 1)
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    email = data.get("emailAddress", "unknown")
-                    return ConnectionHealth(
-                        status="healthy",
-                        is_healthy=True,
-                        latency_ms=latency,
-                        details={"email": email, "messages_total": data.get("messagesTotal", 0)},
-                    )
-                if resp.status_code in (401, 403):
-                    return ConnectionHealth(
-                        status="unauthorized",
-                        is_healthy=False,
-                        latency_ms=latency,
-                        error_message="Gmail access token invalid or expired.",
-                    )
+            if resp.status_code == 200:
+                data = resp.json()
+                email = data.get("emailAddress", "unknown")
                 return ConnectionHealth(
-                    status="degraded",
+                    status="healthy",
+                    is_healthy=True,
+                    latency_ms=latency,
+                    details={"email": email, "messages_total": data.get("messagesTotal", 0)},
+                )
+            if resp.status_code in (401, 403):
+                return ConnectionHealth(
+                    status="unauthorized",
                     is_healthy=False,
                     latency_ms=latency,
-                    error_message=f"Gmail profile returned status {resp.status_code}.",
+                    error_message="Gmail access token invalid or expired.",
                 )
+            return ConnectionHealth(
+                status="degraded",
+                is_healthy=False,
+                latency_ms=latency,
+                error_message=f"Gmail profile returned status {resp.status_code}.",
+            )
         except Exception as exc:
             latency = round((time.perf_counter() - start) * 1000.0, 1)
             return ConnectionHealth(
@@ -131,93 +140,89 @@ class GmailClient:
     async def search_messages(self, query: str, max_results: int = 10) -> list[dict[str, Any]]:
         """Search messages matching Gmail query string."""
         params = {"q": query.strip(), "maxResults": min(max(1, max_results), 50)}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{GMAIL_API_BASE}/messages", headers=self._headers, params=params)
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
+        resp = await self.http_client.get(f"{GMAIL_API_BASE}/messages", headers=self._headers, params=params)
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
 
-            raw_msgs = resp.json().get("messages", [])
-            results = []
-            for m in raw_msgs[:max_results]:
-                mid = m.get("id")
-                if mid:
-                    meta = await self.get_message_metadata(mid)
-                    results.append(meta)
-            return results
+        raw_msgs = resp.json().get("messages", [])
+        results = []
+        for m in raw_msgs[:max_results]:
+            mid = m.get("id")
+            if mid:
+                meta = await self.get_message_metadata(mid)
+                results.append(meta)
+        return results
 
     async def get_message(self, message_id: str) -> dict[str, Any]:
         """Retrieve full message including decoded text body."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{GMAIL_API_BASE}/messages/{message_id}", headers=self._headers, params={"format": "full"})
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
+        resp = await self.http_client.get(f"{GMAIL_API_BASE}/messages/{message_id}", headers=self._headers, params={"format": "full"})
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
 
-            data = resp.json()
-            headers = {h["name"].lower(): h["value"] for h in data.get("payload", {}).get("headers", [])}
-            body = _extract_body_from_payload(data.get("payload", {}))
+        data = resp.json()
+        headers = {h["name"].lower(): h["value"] for h in data.get("payload", {}).get("headers", [])}
+        body = _extract_body_from_payload(data.get("payload", {}))
 
-            return {
-                "id": data.get("id"),
-                "thread_id": data.get("threadId"),
+        return {
+            "id": data.get("id"),
+            "thread_id": data.get("threadId"),
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
+            "snippet": data.get("snippet", ""),
+            "body": body,
+            "label_ids": data.get("labelIds", []),
+        }
+
+    async def get_thread(self, thread_id: str) -> dict[str, Any]:
+        """Retrieve all messages belonging to a conversation thread."""
+        resp = await self.http_client.get(f"{GMAIL_API_BASE}/threads/{thread_id}", headers=self._headers, params={"format": "full"})
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
+
+        data = resp.json()
+        raw_msgs = data.get("messages", [])
+        messages = []
+        for m in raw_msgs:
+            headers = {h["name"].lower(): h["value"] for h in m.get("payload", {}).get("headers", [])}
+            body = _extract_body_from_payload(m.get("payload", {}))
+            messages.append({
+                "id": m.get("id"),
                 "from": headers.get("from", ""),
                 "to": headers.get("to", ""),
                 "subject": headers.get("subject", ""),
                 "date": headers.get("date", ""),
-                "snippet": data.get("snippet", ""),
+                "snippet": m.get("snippet", ""),
                 "body": body,
-                "label_ids": data.get("labelIds", []),
-            }
+            })
 
-    async def get_thread(self, thread_id: str) -> dict[str, Any]:
-        """Retrieve all messages belonging to a conversation thread."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{GMAIL_API_BASE}/threads/{thread_id}", headers=self._headers, params={"format": "full"})
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
-
-            data = resp.json()
-            raw_msgs = data.get("messages", [])
-            messages = []
-            for m in raw_msgs:
-                headers = {h["name"].lower(): h["value"] for h in m.get("payload", {}).get("headers", [])}
-                body = _extract_body_from_payload(m.get("payload", {}))
-                messages.append({
-                    "id": m.get("id"),
-                    "from": headers.get("from", ""),
-                    "to": headers.get("to", ""),
-                    "subject": headers.get("subject", ""),
-                    "date": headers.get("date", ""),
-                    "snippet": m.get("snippet", ""),
-                    "body": body,
-                })
-
-            return {
-                "thread_id": data.get("id"),
-                "history_id": data.get("historyId"),
-                "messages_count": len(messages),
-                "messages": messages,
-            }
+        return {
+            "thread_id": data.get("id"),
+            "history_id": data.get("historyId"),
+            "messages_count": len(messages),
+            "messages": messages,
+        }
 
     async def get_message_metadata(self, message_id: str) -> dict[str, Any]:
         """Retrieve lightweight metadata for a message without full body payload."""
         params = {"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{GMAIL_API_BASE}/messages/{message_id}", headers=self._headers, params=params)
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
+        resp = await self.http_client.get(f"{GMAIL_API_BASE}/messages/{message_id}", headers=self._headers, params=params)
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
 
-            data = resp.json()
-            headers = {h["name"].lower(): h["value"] for h in data.get("payload", {}).get("headers", [])}
-            return {
-                "id": data.get("id"),
-                "thread_id": data.get("threadId"),
-                "from": headers.get("from", ""),
-                "to": headers.get("to", ""),
-                "subject": headers.get("subject", ""),
-                "date": headers.get("date", ""),
-                "snippet": data.get("snippet", ""),
-                "label_ids": data.get("labelIds", []),
-            }
+        data = resp.json()
+        headers = {h["name"].lower(): h["value"] for h in data.get("payload", {}).get("headers", [])}
+        return {
+            "id": data.get("id"),
+            "thread_id": data.get("threadId"),
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
+            "snippet": data.get("snippet", ""),
+            "label_ids": data.get("labelIds", []),
+        }
 
     def _create_mime_message(
         self,
@@ -254,19 +259,18 @@ class GmailClient:
         if thread_id:
             payload["message"]["threadId"] = thread_id
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(f"{GMAIL_API_BASE}/drafts", headers=self._headers, json=payload)
-            if resp.status_code not in (200, 201):
-                self._handle_response_error(resp)
+        resp = await self.http_client.post(f"{GMAIL_API_BASE}/drafts", headers=self._headers, json=payload)
+        if resp.status_code not in (200, 201):
+            self._handle_response_error(resp)
 
-            data = resp.json()
-            return {
-                "draft_id": data.get("id"),
-                "message_id": data.get("message", {}).get("id"),
-                "to": to,
-                "subject": subject,
-                "status": "draft_created",
-            }
+        data = resp.json()
+        return {
+            "draft_id": data.get("id"),
+            "message_id": data.get("message", {}).get("id"),
+            "to": to,
+            "subject": subject,
+            "status": "draft_created",
+        }
 
     async def send_email(
         self,
@@ -282,19 +286,18 @@ class GmailClient:
         if thread_id:
             payload["threadId"] = thread_id
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(f"{GMAIL_API_BASE}/messages/send", headers=self._headers, json=payload)
-            if resp.status_code not in (200, 201):
-                self._handle_response_error(resp)
+        resp = await self.http_client.post(f"{GMAIL_API_BASE}/messages/send", headers=self._headers, json=payload, idempotent=False)
+        if resp.status_code not in (200, 201):
+            self._handle_response_error(resp)
 
-            data = resp.json()
-            return {
-                "message_id": data.get("id"),
-                "thread_id": data.get("threadId"),
-                "to": to,
-                "subject": subject,
-                "status": "sent",
-            }
+        data = resp.json()
+        return {
+            "message_id": data.get("id"),
+            "thread_id": data.get("threadId"),
+            "to": to,
+            "subject": subject,
+            "status": "sent",
+        }
 
     async def list_outreach_history(self, max_results: int = 15) -> list[dict[str, Any]]:
         """Track history of sent outreach emails."""

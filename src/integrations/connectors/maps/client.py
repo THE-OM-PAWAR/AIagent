@@ -13,6 +13,7 @@ from src.integrations.errors import (
     ProviderUnavailableError,
     RateLimitError,
 )
+from src.integrations.http_client import IntegrationHttpClient
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,18 @@ class GooglePlacesClient:
         self,
         api_key: str,
         timeout: float = 15.0,
+        http_client: IntegrationHttpClient | None = None,
     ) -> None:
         self.api_key = api_key.strip()
         self.timeout = timeout
+        self.http_client = http_client or IntegrationHttpClient(
+            provider_id="google_maps",
+            read_timeout=timeout,
+        )
+
+    def get_telemetry(self) -> dict[str, Any]:
+        """Return production HTTP metrics and latency for Google Maps Places."""
+        return self.http_client.get_telemetry()
 
     def _handle_response_error(self, status: str, error_message: str | None = None) -> None:
         """Handle Places API specific status codes."""
@@ -66,30 +76,29 @@ class GooglePlacesClient:
         params = {"query": "restaurant", "key": self.api_key}
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{PLACES_API_BASE}/textsearch/json", params=params)
-                latency = round((time.perf_counter() - start) * 1000.0, 1)
+            resp = await self.http_client.get(f"{PLACES_API_BASE}/textsearch/json", params=params, timeout=10.0)
+            latency = round((time.perf_counter() - start) * 1000.0, 1)
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    status = data.get("status", "UNKNOWN")
-                    if status in ("OK", "ZERO_RESULTS"):
-                        return ConnectionHealth(status="healthy", is_healthy=True, latency_ms=latency)
-                    if status in ("REQUEST_DENIED", "OVER_QUERY_LIMIT"):
-                        err_msg = data.get("error_message", status)
-                        return ConnectionHealth(
-                            status="unauthorized",
-                            is_healthy=False,
-                            latency_ms=latency,
-                            error_message=err_msg,
-                        )
+            if resp.status_code == 200:
+                data = resp.json()
+                status = data.get("status", "UNKNOWN")
+                if status in ("OK", "ZERO_RESULTS"):
+                    return ConnectionHealth(status="healthy", is_healthy=True, latency_ms=latency)
+                if status in ("REQUEST_DENIED", "OVER_QUERY_LIMIT"):
+                    err_msg = data.get("error_message", status)
+                    return ConnectionHealth(
+                        status="unauthorized",
+                        is_healthy=False,
+                        latency_ms=latency,
+                        error_message=err_msg,
+                    )
 
-                return ConnectionHealth(
-                    status="degraded",
-                    is_healthy=False,
-                    latency_ms=latency,
-                    error_message=f"Places returned HTTP {resp.status_code}",
-                )
+            return ConnectionHealth(
+                status="degraded",
+                is_healthy=False,
+                latency_ms=latency,
+                error_message=f"Places returned HTTP {resp.status_code}",
+            )
         except Exception as exc:
             latency = round((time.perf_counter() - start) * 1000.0, 1)
             return ConnectionHealth(
@@ -117,31 +126,30 @@ class GooglePlacesClient:
         if type_filter:
             params["type"] = type_filter.strip()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{PLACES_API_BASE}/textsearch/json", params=params)
-            if resp.status_code != 200:
-                raise ProviderUnavailableError(f"Google Places HTTP {resp.status_code}", provider_id="google_maps")
+        resp = await self.http_client.get(f"{PLACES_API_BASE}/textsearch/json", params=params)
+        if resp.status_code != 200:
+            raise ProviderUnavailableError(f"Google Places HTTP {resp.status_code}", provider_id="google_maps")
 
-            data = resp.json()
-            status = data.get("status", "OK")
-            if status not in ("OK", "ZERO_RESULTS"):
-                self._handle_response_error(status, data.get("error_message"))
+        data = resp.json()
+        status = data.get("status", "OK")
+        if status not in ("OK", "ZERO_RESULTS"):
+            self._handle_response_error(status, data.get("error_message"))
 
-            results = data.get("results", [])
-            items = []
-            for r in results:
-                items.append({
-                    "place_id": r.get("place_id"),
-                    "name": r.get("name"),
-                    "formatted_address": r.get("formatted_address"),
-                    "rating": r.get("rating"),
-                    "user_ratings_total": r.get("user_ratings_total"),
-                    "business_status": r.get("business_status"),
-                    "types": r.get("types", []),
-                    "lat": r.get("geometry", {}).get("location", {}).get("lat"),
-                    "lng": r.get("geometry", {}).get("location", {}).get("lng"),
-                })
-            return items
+        results = data.get("results", [])
+        items = []
+        for r in results:
+            items.append({
+                "place_id": r.get("place_id"),
+                "name": r.get("name"),
+                "formatted_address": r.get("formatted_address"),
+                "rating": r.get("rating"),
+                "user_ratings_total": r.get("user_ratings_total"),
+                "business_status": r.get("business_status"),
+                "types": r.get("types", []),
+                "lat": r.get("geometry", {}).get("location", {}).get("lat"),
+                "lng": r.get("geometry", {}).get("location", {}).get("lng"),
+            })
+        return items
 
     async def get_place_details(
         self,
@@ -156,32 +164,31 @@ class GooglePlacesClient:
             "key": self.api_key,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{PLACES_API_BASE}/details/json", params=params)
-            if resp.status_code != 200:
-                raise ProviderUnavailableError(f"Google Places HTTP {resp.status_code}", provider_id="google_maps")
+        resp = await self.http_client.get(f"{PLACES_API_BASE}/details/json", params=params)
+        if resp.status_code != 200:
+            raise ProviderUnavailableError(f"Google Places HTTP {resp.status_code}", provider_id="google_maps")
 
-            data = resp.json()
-            status = data.get("status", "OK")
-            if status not in ("OK", "ZERO_RESULTS"):
-                self._handle_response_error(status, data.get("error_message"))
+        data = resp.json()
+        status = data.get("status", "OK")
+        if status not in ("OK", "ZERO_RESULTS"):
+            self._handle_response_error(status, data.get("error_message"))
 
-            result = data.get("result", {})
-            opening = result.get("opening_hours", {})
-            return {
-                "place_id": result.get("place_id") or place_id,
-                "name": result.get("name"),
-                "formatted_address": result.get("formatted_address"),
-                "phone_number": result.get("formatted_phone_number") or result.get("international_phone_number"),
-                "website": result.get("website"),
-                "rating": result.get("rating"),
-                "user_ratings_total": result.get("user_ratings_total"),
-                "business_status": result.get("business_status"),
-                "is_open_now": opening.get("open_now"),
-                "weekday_hours": opening.get("weekday_text", []),
-                "google_maps_url": result.get("url"),
-                "attribution": "Powered by Google Places",
-            }
+        result = data.get("result", {})
+        opening = result.get("opening_hours", {})
+        return {
+            "place_id": result.get("place_id") or place_id,
+            "name": result.get("name"),
+            "formatted_address": result.get("formatted_address"),
+            "phone_number": result.get("formatted_phone_number") or result.get("international_phone_number"),
+            "website": result.get("website"),
+            "rating": result.get("rating"),
+            "user_ratings_total": result.get("user_ratings_total"),
+            "business_status": result.get("business_status"),
+            "is_open_now": opening.get("open_now"),
+            "weekday_hours": opening.get("weekday_text", []),
+            "google_maps_url": result.get("url"),
+            "attribution": "Powered by Google Places",
+        }
 
     async def discover_client_leads(
         self,

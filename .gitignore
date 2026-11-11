@@ -27,8 +27,6 @@ venv/
 ENV/
 
 # Environment Variables & Secrets
-.env
-.env.*
 !.env.example
 *.pem
 *.key
@@ -37,7 +35,6 @@ ENV/
 
 # IDE & Editors
 .idea/
-.vscode/
 *.swp
 *.swo
 *~
@@ -51,3 +48,5 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+config.bat
+node_modules

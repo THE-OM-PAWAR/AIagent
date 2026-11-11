@@ -14,6 +14,7 @@ from src.integrations.errors import (
     ProviderUnavailableError,
     RateLimitError,
 )
+from src.integrations.http_client import IntegrationHttpClient
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +28,18 @@ class GoogleCalendarClient:
         self,
         access_token: str,
         timeout: float = 15.0,
+        http_client: IntegrationHttpClient | None = None,
     ) -> None:
         self.access_token = access_token.strip()
         self.timeout = timeout
+        self.http_client = http_client or IntegrationHttpClient(
+            provider_id="google_calendar",
+            read_timeout=timeout,
+        )
+
+    def get_telemetry(self) -> dict[str, Any]:
+        """Return production HTTP metrics and latency for Google Calendar."""
+        return self.http_client.get_telemetry()
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -59,33 +69,32 @@ class GoogleCalendarClient:
 
         start = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{CALENDAR_API_BASE}/users/me/calendarList/primary", headers=self._headers)
-                latency = round((time.perf_counter() - start) * 1000.0, 1)
+            resp = await self.http_client.get(f"{CALENDAR_API_BASE}/users/me/calendarList/primary", headers=self._headers, timeout=10.0)
+            latency = round((time.perf_counter() - start) * 1000.0, 1)
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    summary = data.get("summary", "Primary Calendar")
-                    time_zone = data.get("timeZone", "UTC")
-                    return ConnectionHealth(
-                        status="healthy",
-                        is_healthy=True,
-                        latency_ms=latency,
-                        details={"summary": summary, "timeZone": time_zone},
-                    )
-                if resp.status_code in (401, 403):
-                    return ConnectionHealth(
-                        status="unauthorized",
-                        is_healthy=False,
-                        latency_ms=latency,
-                        error_message="Calendar access token invalid or expired.",
-                    )
+            if resp.status_code == 200:
+                data = resp.json()
+                summary = data.get("summary", "Primary Calendar")
+                time_zone = data.get("timeZone", "UTC")
                 return ConnectionHealth(
-                    status="degraded",
+                    status="healthy",
+                    is_healthy=True,
+                    latency_ms=latency,
+                    details={"summary": summary, "timeZone": time_zone},
+                )
+            if resp.status_code in (401, 403):
+                return ConnectionHealth(
+                    status="unauthorized",
                     is_healthy=False,
                     latency_ms=latency,
-                    error_message=f"Calendar check returned status {resp.status_code}.",
+                    error_message="Calendar access token invalid or expired.",
                 )
+            return ConnectionHealth(
+                status="degraded",
+                is_healthy=False,
+                latency_ms=latency,
+                error_message=f"Calendar check returned status {resp.status_code}.",
+            )
         except Exception as exc:
             latency = round((time.perf_counter() - start) * 1000.0, 1)
             return ConnectionHealth(
@@ -118,28 +127,27 @@ class GoogleCalendarClient:
         if query:
             params["q"] = query.strip()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{CALENDAR_API_BASE}/calendars/{calendar_id}/events", headers=self._headers, params=params)
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
+        resp = await self.http_client.get(f"{CALENDAR_API_BASE}/calendars/{calendar_id}/events", headers=self._headers, params=params)
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
 
-            items = resp.json().get("items", [])
-            results = []
-            for item in items:
-                start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
-                end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
-                results.append({
-                    "id": item.get("id"),
-                    "summary": item.get("summary", "Untitled Event"),
-                    "start": start,
-                    "end": end,
-                    "description": item.get("description", ""),
-                    "location": item.get("location", ""),
-                    "status": item.get("status"),
-                    "html_link": item.get("htmlLink"),
-                    "attendees": [a.get("email") for a in item.get("attendees", []) if a.get("email")],
-                })
-            return results
+        items = resp.json().get("items", [])
+        results = []
+        for item in items:
+            start = item.get("start", {}).get("dateTime") or item.get("start", {}).get("date")
+            end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
+            results.append({
+                "id": item.get("id"),
+                "summary": item.get("summary", "Untitled Event"),
+                "start": start,
+                "end": end,
+                "description": item.get("description", ""),
+                "location": item.get("location", ""),
+                "status": item.get("status"),
+                "html_link": item.get("htmlLink"),
+                "attendees": [a.get("email") for a in item.get("attendees", []) if a.get("email")],
+            })
+        return results
 
     async def check_availability(
         self,
@@ -155,23 +163,22 @@ class GoogleCalendarClient:
             "timeZone": timezone_str,
             "items": [{"id": calendar_id}],
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(f"{CALENDAR_API_BASE}/freeBusy", headers=self._headers, json=payload)
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
+        resp = await self.http_client.post(f"{CALENDAR_API_BASE}/freeBusy", headers=self._headers, json=payload)
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
 
-            data = resp.json()
-            busy_periods = data.get("calendars", {}).get(calendar_id, {}).get("busy", [])
-            is_available = len(busy_periods) == 0
+        data = resp.json()
+        busy_periods = data.get("calendars", {}).get(calendar_id, {}).get("busy", [])
+        is_available = len(busy_periods) == 0
 
-            return {
-                "calendar_id": calendar_id,
-                "time_min": time_min,
-                "time_max": time_max,
-                "is_available": is_available,
-                "busy_periods": busy_periods,
-                "busy_count": len(busy_periods),
-            }
+        return {
+            "calendar_id": calendar_id,
+            "time_min": time_min,
+            "time_max": time_max,
+            "is_available": is_available,
+            "busy_periods": busy_periods,
+            "busy_count": len(busy_periods),
+        }
 
     async def create_event(
         self,
@@ -197,20 +204,19 @@ class GoogleCalendarClient:
         if recurrence:
             event_body["recurrence"] = recurrence
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(f"{CALENDAR_API_BASE}/calendars/primary/events", headers=self._headers, json=event_body)
-            if resp.status_code not in (200, 201):
-                self._handle_response_error(resp)
+        resp = await self.http_client.post(f"{CALENDAR_API_BASE}/calendars/primary/events", headers=self._headers, json=event_body, idempotent=False)
+        if resp.status_code not in (200, 201):
+            self._handle_response_error(resp)
 
-            data = resp.json()
-            return {
-                "id": data.get("id"),
-                "summary": data.get("summary"),
-                "start": data.get("start", {}).get("dateTime") or data.get("start", {}).get("date"),
-                "end": data.get("end", {}).get("dateTime") or data.get("end", {}).get("date"),
-                "status": "created",
-                "html_link": data.get("htmlLink"),
-            }
+        data = resp.json()
+        return {
+            "id": data.get("id"),
+            "summary": data.get("summary"),
+            "start": data.get("start", {}).get("dateTime") or data.get("start", {}).get("date"),
+            "end": data.get("end", {}).get("dateTime") or data.get("end", {}).get("date"),
+            "status": "created",
+            "html_link": data.get("htmlLink"),
+        }
 
     async def update_event(
         self,
@@ -240,52 +246,49 @@ class GoogleCalendarClient:
         if attendees is not None:
             patch_body["attendees"] = [{"email": a.strip()} for a in attendees if a.strip()]
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.patch(
-                f"{CALENDAR_API_BASE}/calendars/primary/events/{event_id}",
-                headers=self._headers,
-                json=patch_body,
-            )
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
+        resp = await self.http_client.patch(
+            f"{CALENDAR_API_BASE}/calendars/primary/events/{event_id}",
+            headers=self._headers,
+            json=patch_body,
+        )
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
 
-            data = resp.json()
-            return {
-                "id": data.get("id"),
-                "summary": data.get("summary"),
-                "start": data.get("start", {}).get("dateTime") or data.get("start", {}).get("date"),
-                "end": data.get("end", {}).get("dateTime") or data.get("end", {}).get("date"),
-                "status": "updated",
-                "html_link": data.get("htmlLink"),
-            }
+        data = resp.json()
+        return {
+            "id": data.get("id"),
+            "summary": data.get("summary"),
+            "start": data.get("start", {}).get("dateTime") or data.get("start", {}).get("date"),
+            "end": data.get("end", {}).get("dateTime") or data.get("end", {}).get("date"),
+            "status": "updated",
+            "html_link": data.get("htmlLink"),
+        }
 
     async def delete_event(self, event_id: str, calendar_id: str = "primary") -> dict[str, Any]:
         """Delete an event by ID."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.delete(f"{CALENDAR_API_BASE}/calendars/{calendar_id}/events/{event_id}", headers=self._headers)
-            if resp.status_code not in (200, 204):
-                self._handle_response_error(resp)
+        resp = await self.http_client.delete(f"{CALENDAR_API_BASE}/calendars/{calendar_id}/events/{event_id}", headers=self._headers)
+        if resp.status_code not in (200, 204):
+            self._handle_response_error(resp)
 
-            return {"id": event_id, "status": "deleted"}
+        return {"id": event_id, "status": "deleted"}
 
     async def get_event(self, event_id: str, calendar_id: str = "primary") -> dict[str, Any]:
         """Retrieve details of a single event."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(f"{CALENDAR_API_BASE}/calendars/{calendar_id}/events/{event_id}", headers=self._headers)
-            if resp.status_code != 200:
-                self._handle_response_error(resp)
+        resp = await self.http_client.get(f"{CALENDAR_API_BASE}/calendars/{calendar_id}/events/{event_id}", headers=self._headers)
+        if resp.status_code != 200:
+            self._handle_response_error(resp)
 
-            item = resp.json()
-            return {
-                "id": item.get("id"),
-                "summary": item.get("summary", "Untitled"),
-                "description": item.get("description", ""),
-                "location": item.get("location", ""),
-                "start": item.get("start", {}).get("dateTime") or item.get("start", {}).get("date"),
-                "end": item.get("end", {}).get("dateTime") or item.get("end", {}).get("date"),
-                "status": item.get("status"),
-                "attendees": [a.get("email") for a in item.get("attendees", []) if a.get("email")],
-                "recurrence": item.get("recurrence", []),
-                "html_link": item.get("htmlLink"),
-            }
+        item = resp.json()
+        return {
+            "id": item.get("id"),
+            "summary": item.get("summary", "Untitled"),
+            "description": item.get("description", ""),
+            "location": item.get("location", ""),
+            "start": item.get("start", {}).get("dateTime") or item.get("start", {}).get("date"),
+            "end": item.get("end", {}).get("dateTime") or item.get("end", {}).get("date"),
+            "status": item.get("status"),
+            "attendees": [a.get("email") for a in item.get("attendees", []) if a.get("email")],
+            "recurrence": item.get("recurrence", []),
+            "html_link": item.get("htmlLink"),
+        }
 

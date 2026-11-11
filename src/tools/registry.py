@@ -147,6 +147,7 @@ class ToolRegistry:
         database_url: str | None = None,
         system_search_key: str | None = None,
         google_maps_key: str | None = None,
+        calendly_token: str | None = None,
     ) -> None:
         """Convenience method to instantiate and register all built-in and external integration tools."""
         from src.tools.builtin.browser_automation import BrowserAutomationTool
@@ -221,6 +222,32 @@ class ToolRegistry:
                 self.register_tool(tool)
         except Exception as exc:
             logger.debug("Google Maps tools registration skipped: %s", exc)
+
+        # External Integrations (Calendly)
+        try:
+            from src.integrations.connectors.calendly import get_calendly_tools
+
+            for tool in get_calendly_tools(
+                token=calendly_token,
+                integration_registry=integration_registry,
+                database_url=database_url,
+            ):
+                self.register_tool(tool)
+        except Exception as exc:
+            logger.debug("Calendly tools registration skipped: %s", exc)
+
+        # Cross-Service Coordination (Calendly <-> Google Calendar)
+        try:
+            from src.integrations.coordination import CalendarCalendlyCoordinationTool
+
+            self.register_tool(
+                CalendarCalendlyCoordinationTool(
+                    integration_registry=integration_registry,
+                    database_url=database_url,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Coordination tool registration skipped: %s", exc)
 
         if memory_manager is not None:
             from src.tools.builtin.memory_tools import MemoryOperationsTool

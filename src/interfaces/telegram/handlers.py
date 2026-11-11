@@ -28,6 +28,7 @@ from src.database.repositories.integration_repo import IntegrationRepository
 from src.database.session import get_async_session
 from src.integrations.base import AuthType
 from src.integrations.connectors.calendar import GoogleCalendarConnector
+from src.integrations.connectors.calendly import CalendlyConnector, CalendlyOAuthClient
 from src.integrations.connectors.drive import GoogleDriveConnector
 from src.integrations.connectors.gmail import GmailConnector
 from src.integrations.connectors.google import GoogleOAuthClient, GoogleWorkspaceConnector
@@ -339,6 +340,25 @@ def get_integration_registry(context: ContextTypes.DEFAULT_TYPE) -> IntegrationR
         registry.register_connector(GoogleDriveConnector(database_url=db_url))
         registry.register_connector(GooglePlacesConnector(system_api_key=maps_key, database_url=db_url))
 
+        # 3. Register Calendly connector
+        calendly_client_id = getattr(config, "calendly_client_id", None)
+        calendly_client_secret = getattr(config, "calendly_client_secret", None)
+        calendly_redirect_uri = getattr(config, "calendly_redirect_uri", "urn:ietf:wg:oauth:2.0:oob")
+        calendly_api_key = getattr(config, "calendly_api_key", None)
+
+        calendly_oauth = CalendlyOAuthClient(
+            client_id=calendly_client_id,
+            client_secret=calendly_client_secret,
+            redirect_uri=calendly_redirect_uri,
+        )
+        registry.register_connector(
+            CalendlyConnector(
+                oauth_client=calendly_oauth,
+                system_api_key=calendly_api_key,
+                database_url=db_url,
+            )
+        )
+
         if isinstance(bot_data, dict):
             bot_data["integration_registry"] = registry
     return registry
@@ -427,6 +447,53 @@ async def initiate_connect_prompt(
     meta = connector.metadata
     user = update.effective_user
     user_id = user.id if user else 0
+
+    # OAuth2 or PAT flow for Calendly
+    if provider_id == "calendly":
+        calendly_conn = registry.get_connector("calendly")
+        oauth_client = getattr(calendly_conn, "oauth_client", None) or CalendlyOAuthClient()
+        has_client_id = bool(getattr(oauth_client, "client_id", None))
+
+        if has_client_id:
+            try:
+                auth_url, csrf = oauth_client.generate_authorization_url(user_id)
+                context.user_data["awaiting_calendly_for"] = "calendly"
+                context.user_data["oauth_csrf"] = csrf
+
+                prompt_text = (
+                    "🔐 *Connect Calendly*\n\n"
+                    "1. Tap the link below to authorize access with Calendly:\n"
+                    f"👉 [**Authorize Calendly Account**]({auth_url})\n\n"
+                    "2. Sign in and grant access, then copy the authorization code.\n"
+                    "3. Send the **authorization code** (or your **Personal Access Token**) in your next message.\n\n"
+                    "🛡️ *Security & Privacy:*\n"
+                    "• Your message will be **immediately deleted** from Telegram chat history.\n"
+                    "• Credentials are encrypted at rest with Fernet.\n"
+                    "• Type `/cancel` at any time to abort."
+                )
+                target = update.message or update.effective_message
+                if target:
+                    await target.reply_text(prompt_text, parse_mode="Markdown")
+                return
+            except Exception as exc:
+                logger.debug("Could not generate Calendly OAuth link: %s. Falling back to PAT prompt.", exc)
+
+        context.user_data["awaiting_calendly_for"] = "calendly"
+        prompt_text = (
+            "🔑 *Connect Calendly with Personal Access Token (PAT)*\n\n"
+            "Please send your **Calendly Personal Access Token** in your next message.\n\n"
+            "📖 *How to get a token:*\n"
+            "1. Go to Calendly > Integrations > API and Webhooks\n"
+            "2. Generate a Personal Access Token and paste it here.\n\n"
+            "🛡️ *Security & Privacy:*\n"
+            "• Your message will be **immediately deleted** from Telegram history.\n"
+            "• The token is encrypted with Fernet and never logged.\n"
+            "• Type `/cancel` at any time to abort."
+        )
+        target = update.message or update.effective_message
+        if target:
+            await target.reply_text(prompt_text, parse_mode="Markdown")
+        return
 
     # OAuth2 flow for Google Workspace (Gmail, Calendar, Drive)
     if meta.auth_type == AuthType.OAUTH2:
@@ -633,6 +700,9 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             cancelled_provider = context.user_data.pop("awaiting_api_key_for")
         elif context.user_data.get("awaiting_oauth_code_for"):
             cancelled_provider = context.user_data.pop("awaiting_oauth_code_for")
+            context.user_data.pop("oauth_csrf", None)
+        elif context.user_data.get("awaiting_calendly_for"):
+            cancelled_provider = context.user_data.pop("awaiting_calendly_for")
             context.user_data.pop("oauth_csrf", None)
 
     if cancelled_provider:
@@ -1077,6 +1147,82 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception as exc:
                 logger.error("Error connecting Google OAuth for user %s: %s", user.id, exc)
                 await status_msg.edit_text(f"❌ Connection error: {exc}\nUse `/connect google` to try again.")
+        return
+
+    # Intercept for Calendly (OAuth code or Personal Access Token)
+    awaiting_calendly = (
+        context.user_data.get("awaiting_calendly_for")
+        if isinstance(getattr(context, "user_data", None), dict)
+        else None
+    )
+    if awaiting_calendly:
+        context.user_data.pop("awaiting_calendly_for", None)
+        context.user_data.pop("oauth_csrf", None)
+
+        try:
+            await message.delete()
+        except Exception as del_err:
+            logger.debug("Failed deleting Calendly credential message: %s", del_err)
+
+        submitted_value = (message.text or "").strip()
+        if not submitted_value or submitted_value == "/cancel":
+            await message.reply_text("🚫 Connection cancelled.")
+            return
+
+        registry = get_integration_registry(context)
+        calendly_conn = registry.get_connector("calendly")
+        oauth_client = getattr(calendly_conn, "oauth_client", None) or CalendlyOAuthClient()
+
+        async with get_integration_repo(context) as repo:
+            if not repo:
+                await message.reply_text("⚠️ Database is unavailable. Could not save integration credentials.")
+                return
+
+            status_msg = await message.reply_text("🔄 Verifying Calendly credentials...")
+            tokens = None
+            if getattr(oauth_client, "client_id", None):
+                try:
+                    tokens = await oauth_client.exchange_code(submitted_value)
+                except Exception as exc:
+                    logger.debug("OAuth code exchange failed, treating as PAT: %s", exc)
+
+            try:
+                if tokens and tokens.get("access_token"):
+                    health = await registry.connect_oauth_tokens(
+                        repo=repo,
+                        user_id=user.id,
+                        provider_id="calendly",
+                        token_data=tokens,
+                    )
+                else:
+                    health = await registry.connect_api_key(
+                        repo=repo,
+                        user_id=user.id,
+                        provider_id="calendly",
+                        api_key=submitted_value,
+                    )
+
+                if health.is_healthy:
+                    acc_name = health.details.get("name") or health.details.get("email") or "Calendly account"
+                    masked = mask_secret(submitted_value)
+                    lat_text = f" ({health.latency_ms:.1f}ms)" if health.latency_ms else ""
+                    success_text = (
+                        f"✅ *Successfully connected Calendly!* (`calendly`)\n\n"
+                        f"• Account: `{acc_name}`\n"
+                        f"• Status: 🟢 Connected & Verified{lat_text}\n"
+                        f"• Credential: `{masked}` (Encrypted at rest with Fernet)\n\n"
+                        "The assistant can now manage event types, generate booking links, and coordinate meetings."
+                    )
+                    await status_msg.edit_text(success_text, parse_mode="Markdown")
+                else:
+                    err_msg = health.error_message or "Failed to verify Calendly credentials."
+                    await status_msg.edit_text(
+                        f"❌ *Failed to connect Calendly:*\n{err_msg}\n\nUse `/connect calendly` to try again.",
+                        parse_mode="Markdown",
+                    )
+            except Exception as exc:
+                logger.error("Error connecting Calendly for user %s: %s", user.id, exc)
+                await status_msg.edit_text(f"❌ Connection error: {exc}\nUse `/connect calendly` to try again.")
         return
 
     # Handle document attachment or text message

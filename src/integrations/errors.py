@@ -50,3 +50,13 @@ class ContentSanitizationError(IntegrationError):
     """Raised when external content violates safety boundaries or contains malicious injection."""
     pass
 
+
+class WebhookVerificationError(IntegrationError):
+    """Raised when webhook signatures fail HMAC cryptographic verification."""
+    pass
+
+
+class CoordinationError(IntegrationError):
+    """Raised when cross-service coordination or calendar reconciliation encounters an error."""
+    pass
+
