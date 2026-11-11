@@ -2,13 +2,19 @@
 
 from src.tools.base import BaseTool
 from src.tools.builtin import (
+    BrowserAutomationTool,
     CalculatorTool,
+    ConversionTool,
     CurrentUtcTimeTool,
+    DataProcessorTool,
     DateTimeTool,
+    DocumentGeneratorTool,
     FileReaderTool,
     MemoryOperationsTool,
+    SpreadsheetAnalyzerTool,
     TextProcessorTool,
     WebReaderTool,
+    WorkflowControlTool,
     get_current_utc_time,
 )
 from src.tools.errors import (
@@ -29,12 +35,17 @@ from src.tools.schemas import ToolCall, ToolDefinition, ToolResult
 
 __all__ = [
     "BaseTool",
+    "BrowserAutomationTool",
     "CalculatorTool",
+    "ConversionTool",
     "CurrentUtcTimeTool",
+    "DataProcessorTool",
     "DateTimeTool",
+    "DocumentGeneratorTool",
     "FileReaderTool",
     "MemoryOperationsTool",
     "PermissionPolicy",
+    "SpreadsheetAnalyzerTool",
     "TextProcessorTool",
     "ToolArgumentError",
     "ToolCall",
@@ -52,5 +63,6 @@ __all__ = [
     "ToolResultSizeLimitError",
     "ToolTimeoutError",
     "WebReaderTool",
+    "WorkflowControlTool",
     "get_current_utc_time",
 ]

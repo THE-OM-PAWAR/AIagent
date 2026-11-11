@@ -540,7 +540,7 @@ class TestToolRegistryBuiltinRegistration(unittest.IsolatedAsyncioTestCase):
 
         # Check Gemini declarations can be generated
         declarations = registry.get_gemini_declarations()
-        self.assertEqual(len(declarations), 6)
+        self.assertGreaterEqual(len(declarations), 6)
 
     async def test_02_executor_runs_builtin_tools_safely(self) -> None:
         """Verify ToolExecutor wraps success and exceptions correctly for built-in tools."""

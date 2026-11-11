@@ -142,22 +142,47 @@ class ToolRegistry:
         memory_manager: Any = None,
         llm_manager: Any = None,
         storage_root: Any = None,
+        workflow_engine: Any = None,
     ) -> None:
-        """Convenience method to instantiate and register all built-in P0 tools."""
+        """Convenience method to instantiate and register all built-in P0, P1, and P2 tools."""
+        from src.tools.builtin.browser_automation import BrowserAutomationTool
         from src.tools.builtin.calculator import CalculatorTool
+        from src.tools.builtin.conversion import ConversionTool
+        from src.tools.builtin.data_processor import DataProcessorTool
         from src.tools.builtin.datetime_tool import DateTimeTool
+        from src.tools.builtin.document_generator import DocumentGeneratorTool
         from src.tools.builtin.file_reader import FileReaderTool
+        from src.tools.builtin.spreadsheet_analyzer import SpreadsheetAnalyzerTool
         from src.tools.builtin.text_processor import TextProcessorTool
         from src.tools.builtin.web_reader import WebReaderTool
 
+        # P0 tools
         self.register_tool(CalculatorTool())
         self.register_tool(DateTimeTool())
         self.register_tool(TextProcessorTool(llm_manager=llm_manager))
         self.register_tool(FileReaderTool(storage_root=storage_root or "data/uploads"))
         self.register_tool(WebReaderTool())
 
+        # P1 tools
+        self.register_tool(ConversionTool())
+        self.register_tool(DataProcessorTool(storage_root=storage_root or "data"))
+        self.register_tool(DocumentGeneratorTool(output_dir="data/generated"))
+        self.register_tool(SpreadsheetAnalyzerTool(storage_root=storage_root or "data"))
+
+        # P2 tools
+        self.register_tool(BrowserAutomationTool(output_dir="data/generated"))
+
         if memory_manager is not None:
             from src.tools.builtin.memory_tools import MemoryOperationsTool
             self.register_tool(MemoryOperationsTool(memory_manager=memory_manager))
-        logger.info("Registered built-in tools (calculator, datetime, text_processor, file_reader, web_page_reader%s)",
-                    ", memory_operations" if memory_manager else "")
+
+        if workflow_engine is not None:
+            from src.tools.builtin.workflow_tools import WorkflowControlTool
+            self.register_tool(WorkflowControlTool(workflow_engine=workflow_engine))
+
+        logger.info(
+            "Registered built-in tools (calculator, datetime, text_processor, file_reader, web_page_reader, "
+            "conversion_tool, data_processor, document_generator, spreadsheet_analyzer, browser_automation%s%s)",
+            ", memory_operations" if memory_manager else "",
+            ", workflow_control" if workflow_engine else "",
+        )

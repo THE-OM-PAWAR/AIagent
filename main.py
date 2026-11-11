@@ -115,10 +115,35 @@ async def main() -> None:
         system_prompt=config.gemini_system_instruction,
         model_name=config.gemini_model,
     )
-    # Register Phase 2 built-in tools into orchestrator tool registry
+
+    # 5b. Initialize Workflow Engine & Persistent State
+    workflow_engine = None
+    if getattr(config, "database_url", None):
+        try:
+            from src.core.workflow_engine import WorkflowEngine
+            from src.database.models import Base
+            from src.database.session import get_sessionmaker
+            from src.tools.executor import ToolExecutor
+
+            engine = get_engine(config.database_url)
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            session_factory = get_sessionmaker(config.database_url)
+            wf_executor = ToolExecutor(orchestrator.tool_registry)
+            workflow_engine = WorkflowEngine(session_factory=session_factory, tool_executor=wf_executor)
+            recovered = await workflow_engine.recover_on_startup()
+            if recovered > 0:
+                logger.info("Recovered %d interrupted workflows on startup.", recovered)
+        except Exception as exc:
+            logger.warning("WorkflowEngine initialization failed (%s). Continuing without persistent workflows.", exc)
+            workflow_engine = None
+
+    # Register Phase 2 & 3 built-in tools into orchestrator tool registry
     orchestrator.tool_registry.register_builtin_tools(
         memory_manager=memory_manager,
         llm_manager=orchestrator.llm_manager,
+        workflow_engine=workflow_engine,
     )
 
     # 6. Build Telegram bot application with orchestrator injection
