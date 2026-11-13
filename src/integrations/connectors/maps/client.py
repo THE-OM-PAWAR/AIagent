@@ -84,8 +84,28 @@ class GooglePlacesClient:
                 status = data.get("status", "UNKNOWN")
                 if status in ("OK", "ZERO_RESULTS"):
                     return ConnectionHealth(status="healthy", is_healthy=True, latency_ms=latency)
+                
+                err_msg = data.get("error_message", status)
+                # Seamless fallback to Places API (New) if legacy Places API is not activated
+                if "legacy" in (err_msg or "").lower() or "legacy" in status.lower():
+                    try:
+                        new_headers = {
+                            "X-Goog-Api-Key": self.api_key,
+                            "X-Goog-FieldMask": "places.id,places.displayName",
+                            "Content-Type": "application/json",
+                        }
+                        new_resp = await self.http_client.post(
+                            "https://places.googleapis.com/v1/places:searchText",
+                            headers=new_headers,
+                            json={"textQuery": "restaurant"},
+                            timeout=10.0,
+                        )
+                        if new_resp.status_code == 200:
+                            return ConnectionHealth(status="healthy", is_healthy=True, latency_ms=latency)
+                    except Exception as fb_err:
+                        logger.debug("Places API (New) healthcheck fallback: %s", fb_err)
+
                 if status in ("REQUEST_DENIED", "OVER_QUERY_LIMIT"):
-                    err_msg = data.get("error_message", status)
                     return ConnectionHealth(
                         status="unauthorized",
                         is_healthy=False,
@@ -132,8 +152,43 @@ class GooglePlacesClient:
 
         data = resp.json()
         status = data.get("status", "OK")
+        err_msg = data.get("error_message", "")
+
+        # Seamless fallback to Places API (New) if project only enabled Places API (New)
+        if status not in ("OK", "ZERO_RESULTS") and "legacy" in (err_msg or "").lower():
+            try:
+                new_headers = {
+                    "X-Goog-Api-Key": self.api_key,
+                    "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.websiteUri,places.nationalPhoneNumber",
+                    "Content-Type": "application/json",
+                }
+                new_resp = await self.http_client.post(
+                    "https://places.googleapis.com/v1/places:searchText",
+                    headers=new_headers,
+                    json={"textQuery": query.strip()},
+                )
+                if new_resp.status_code == 200:
+                    new_data = new_resp.json()
+                    new_places = new_data.get("places", [])
+                    items = []
+                    for np in new_places:
+                        items.append({
+                            "place_id": np.get("id"),
+                            "name": np.get("displayName", {}).get("text", ""),
+                            "formatted_address": np.get("formattedAddress"),
+                            "rating": np.get("rating"),
+                            "user_ratings_total": np.get("userRatingCount"),
+                            "website": np.get("websiteUri"),
+                            "phone": np.get("nationalPhoneNumber"),
+                            "business_status": "OPERATIONAL",
+                            "types": [],
+                        })
+                    return items
+            except Exception as fb_err:
+                logger.debug("Places API (New) text search fallback: %s", fb_err)
+
         if status not in ("OK", "ZERO_RESULTS"):
-            self._handle_response_error(status, data.get("error_message"))
+            self._handle_response_error(status, err_msg)
 
         results = data.get("results", [])
         items = []
@@ -170,8 +225,38 @@ class GooglePlacesClient:
 
         data = resp.json()
         status = data.get("status", "OK")
+        err_msg = data.get("error_message", "")
+
+        # Seamless fallback to Places API (New) if project only enabled Places API (New)
+        if status not in ("OK", "ZERO_RESULTS") and "legacy" in (err_msg or "").lower():
+            try:
+                new_headers = {
+                    "X-Goog-Api-Key": self.api_key,
+                    "X-Goog-FieldMask": "id,displayName,formattedAddress,rating,userRatingCount,websiteUri,nationalPhoneNumber,googleMapsUri",
+                }
+                new_resp = await self.http_client.get(
+                    f"https://places.googleapis.com/v1/places/{place_id.strip()}",
+                    headers=new_headers,
+                )
+                if new_resp.status_code == 200:
+                    np = new_resp.json()
+                    return {
+                        "place_id": np.get("id") or place_id,
+                        "name": np.get("displayName", {}).get("text", ""),
+                        "formatted_address": np.get("formattedAddress"),
+                        "phone_number": np.get("nationalPhoneNumber"),
+                        "website": np.get("websiteUri"),
+                        "rating": np.get("rating"),
+                        "user_ratings_total": np.get("userRatingCount"),
+                        "business_status": "OPERATIONAL",
+                        "google_maps_url": np.get("googleMapsUri"),
+                        "attribution": "Powered by Google Places (New)",
+                    }
+            except Exception as fb_err:
+                logger.debug("Places API (New) get details fallback: %s", fb_err)
+
         if status not in ("OK", "ZERO_RESULTS"):
-            self._handle_response_error(status, data.get("error_message"))
+            self._handle_response_error(status, err_msg)
 
         result = data.get("result", {})
         opening = result.get("opening_hours", {})

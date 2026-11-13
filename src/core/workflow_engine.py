@@ -33,13 +33,36 @@ _INTERPOLATION_PATTERN = re.compile(r"\{([^}]+)\}")
 def _get_nested_context(context: dict[str, Any], key_path: str) -> Any:
     """Resolve dot-separated key path in context dictionary e.g. 'step1.output.id' or 'context.step1.sum'."""
     clean_path = key_path.strip()
+    if clean_path in context:
+        return context[clean_path]
     if clean_path.startswith("context."):
         clean_path = clean_path[8:]
     elif clean_path.startswith("steps."):
         clean_path = clean_path[6:]
+    if clean_path in context:
+        return context[clean_path]
 
     parts = clean_path.split(".")
-    curr: Any = context
+
+    # Handle step_name.output or step_name.output.field when output is a dictionary
+    if len(parts) >= 2 and parts[1] == "output":
+        direct_key = f"{parts[0]}.output"
+        if direct_key in context:
+            if len(parts) == 2:
+                return context[direct_key]
+            curr = context[direct_key]
+            parts = parts[2:]
+        elif parts[0] in context and isinstance(context[parts[0]], dict) and "output" not in context[parts[0]]:
+            step_val = context[parts[0]]
+            if len(parts) == 2:
+                return step_val
+            curr = step_val
+            parts = parts[2:]
+        else:
+            curr = context
+    else:
+        curr = context
+
     for p in parts:
         if isinstance(curr, dict) and p in curr:
             curr = curr[p]

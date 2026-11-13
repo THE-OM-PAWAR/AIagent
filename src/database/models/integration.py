@@ -18,7 +18,7 @@ class IntegrationCredentialModel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     provider_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     auth_type: Mapped[str] = mapped_column(String(32), default="api_key", nullable=False)
     encrypted_credentials: Mapped[str] = mapped_column(Text, nullable=False)
-    scopes: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="connected", nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=True)

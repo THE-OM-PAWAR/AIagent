@@ -1,5 +1,11 @@
 """SQLAlchemy database models package."""
 
+from src.database.models.automation import (
+    AutomationConfigModel,
+    AutomationFindingModel,
+    AutomationFindingStatus,
+    AutomationType,
+)
 from src.database.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from src.database.models.conflict import MemoryConflictModel
 from src.database.models.conversation import ConversationModel, MessageModel
@@ -42,5 +48,9 @@ __all__ = [
     "validate_workflow_state_transition",
     "IntegrationCredentialModel",
     "IntegrationAuditLogModel",
+    "AutomationType",
+    "AutomationFindingStatus",
+    "AutomationConfigModel",
+    "AutomationFindingModel",
 ]
 

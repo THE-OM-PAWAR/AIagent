@@ -148,7 +148,28 @@ class IntegrationRegistry:
             metadata_json=json.dumps(safe_meta),
         )
 
-        # 4. Audit log
+        # 4. Cascade Google Workspace authorization across sub-services (Gmail, Calendar, Drive)
+        if provider_id in ("google", "gmail", "google_calendar", "google_drive"):
+            target_services = ("google", "gmail", "google_calendar", "google_drive")
+            for sub_p in target_services:
+                if sub_p == provider_id:
+                    continue
+                sub_conn = self.get_connector(sub_p)
+                sub_scopes = (
+                    ",".join(sub_conn.metadata.required_scopes)
+                    if sub_conn and sub_conn.metadata.required_scopes
+                    else scopes_str
+                )
+                await repo.save_credentials(
+                    user_id=user_id,
+                    provider_id=sub_p,
+                    encrypted_credentials=encrypted,
+                    auth_type=AuthType.OAUTH2.value,
+                    scopes=sub_scopes,
+                    metadata_json=json.dumps(safe_meta),
+                )
+
+        # 5. Audit log
         await repo.log_audit(
             user_id=user_id,
             provider_id=provider_id,
@@ -272,10 +293,16 @@ class IntegrationRegistry:
     ) -> list[dict[str, Any]]:
         """Return comprehensive status for all registered integrations for user."""
         user_creds = {rec.provider_id: rec for rec in await repo.list_user_integrations(user_id)}
+        google_rec = user_creds.get("google")
         results: list[dict[str, Any]] = []
 
         for meta in self.list_providers():
             rec = user_creds.get(meta.provider_id)
+            # Inherit connection from Google Workspace if sub-service not explicitly stored
+            if (rec is None or rec.status != "connected") and meta.provider_id in ("gmail", "google_calendar", "google_drive"):
+                if google_rec and google_rec.status == "connected":
+                    rec = google_rec
+
             is_connected = rec is not None and rec.status == "connected"
             masked_key = None
             if rec and rec.metadata_json:

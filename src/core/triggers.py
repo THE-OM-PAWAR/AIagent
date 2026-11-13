@@ -387,9 +387,11 @@ def create_trigger(trigger_type: str, config: dict[str, Any], tz_str: str = "UTC
         trigger = DailyTrigger(time_str=str(time_str))
     elif tt == "weekly":
         time_str = config.get("time") or config.get("time_str")
-        days = config.get("days_of_week") or config.get("days")
+        days = config.get("days_of_week") or config.get("days") or config.get("day_of_week")
         if not time_str or days is None:
             raise TriggerValidationError("WeeklyTrigger config requires 'time' ('HH:MM') and 'days_of_week'.")
+        if isinstance(days, (str, int)):
+            days = [days]
         trigger = WeeklyTrigger(time_str=str(time_str), days_of_week=list(days))
     elif tt == "cron":
         expr = config.get("cron_expression") or config.get("expression") or config.get("cron")

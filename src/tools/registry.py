@@ -148,6 +148,7 @@ class ToolRegistry:
         system_search_key: str | None = None,
         google_maps_key: str | None = None,
         calendly_token: str | None = None,
+        session_factory: Any = None,
     ) -> None:
         """Convenience method to instantiate and register all built-in and external integration tools."""
         from src.tools.builtin.browser_automation import BrowserAutomationTool
@@ -256,6 +257,16 @@ class ToolRegistry:
         if workflow_engine is not None:
             from src.tools.builtin.workflow_tools import WorkflowControlTool
             self.register_tool(WorkflowControlTool(workflow_engine=workflow_engine))
+
+        # Core Automation Templates domain tools
+        active_session_factory = session_factory or getattr(workflow_engine, "session_factory", None)
+        if active_session_factory is not None:
+            try:
+                from src.automations.tools import get_automation_tools
+                for a_tool in get_automation_tools(session_factory=active_session_factory):
+                    self.register_tool(a_tool)
+            except Exception as exc:
+                logger.debug("Automation tools registration skipped: %s", exc)
 
         logger.info(
             "Registered built-in tools (calculator, datetime, text_processor, file_reader, web_page_reader, "
