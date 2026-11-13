@@ -119,9 +119,13 @@ async def main() -> None:
 
     # 5b. Initialize Workflow Engine & Persistent State
     workflow_engine = None
+    workflow_scheduler = None
     if getattr(config, "database_url", None):
         try:
             from src.core.workflow_engine import WorkflowEngine
+            from src.core.workflow_manager import WorkflowManager
+            from src.core.workflow_planner import WorkflowPlanner
+            from src.core.workflow_scheduler import WorkflowScheduler
             from src.database.models import Base
             from src.database.session import get_sessionmaker
             from src.tools.executor import ToolExecutor
@@ -132,13 +136,40 @@ async def main() -> None:
 
             session_factory = get_sessionmaker(config.database_url)
             wf_executor = ToolExecutor(orchestrator.tool_registry)
-            workflow_engine = WorkflowEngine(session_factory=session_factory, tool_executor=wf_executor)
+            wf_manager = WorkflowManager(
+                session_factory=session_factory,
+                tool_registry=orchestrator.tool_registry,
+                permission_policy=orchestrator.permission_policy,
+            )
+            workflow_engine = WorkflowEngine(
+                session_factory=session_factory,
+                tool_executor=wf_executor,
+                workflow_manager=wf_manager,
+            )
+            wf_planner = WorkflowPlanner(
+                workflow_manager=wf_manager,
+                workflow_engine=workflow_engine,
+                llm_manager=orchestrator.llm_manager,
+                gemini_client=gemini_client,
+            )
+            workflow_engine.workflow_planner = wf_planner
+            orchestrator.workflow_engine = workflow_engine
+
+            workflow_scheduler = WorkflowScheduler(
+                session_factory=session_factory,
+                workflow_engine=workflow_engine,
+                poll_interval_seconds=float(getattr(config, "scheduler_poll_interval", 5.0)),
+            )
+            workflow_engine.workflow_scheduler = workflow_scheduler
+            workflow_scheduler.start()
+
             recovered = await workflow_engine.recover_on_startup()
             if recovered > 0:
                 logger.info("Recovered %d interrupted workflows on startup.", recovered)
         except Exception as exc:
             logger.warning("WorkflowEngine initialization failed (%s). Continuing without persistent workflows.", exc)
             workflow_engine = None
+            workflow_scheduler = None
 
     # 5c. Initialize Integration Framework & Connectors
     integration_registry = None
@@ -208,7 +239,24 @@ async def main() -> None:
         gemini_client,
         orchestrator=orchestrator,
         integration_registry=integration_registry,
+        workflow_engine=workflow_engine,
+        workflow_scheduler=workflow_scheduler,
     )
+
+    if workflow_scheduler is not None:
+        async def _tg_scheduler_notify(user_id: int, message_html: str) -> None:
+            try:
+                from telegram.constants import ParseMode
+                await bot_app.bot.send_message(
+                    chat_id=user_id,
+                    text=message_html,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception as notify_err:
+                logger.warning("Could not dispatch scheduled Telegram alert to user %s: %s", user_id, notify_err)
+
+        workflow_scheduler.notification_handler = _tg_scheduler_notify
 
     # 5. Setup graceful shutdown handling
     stop_event = asyncio.Event()
@@ -237,6 +285,11 @@ async def main() -> None:
     finally:
         # 7. Clean shutdown sequence
         logger.info("Starting application shutdown sequence...")
+        if workflow_scheduler and workflow_scheduler.is_running:
+            try:
+                await workflow_scheduler.stop()
+            except Exception as exc:
+                logger.error("Error stopping WorkflowScheduler: %s", exc)
         try:
             await stop_bot(bot_app)
         except Exception as exc:

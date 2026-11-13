@@ -74,6 +74,7 @@ class Config:
     calendly_redirect_uri: str = "urn:ietf:wg:oauth:2.0:oob"
     calendly_api_key: str | None = None
     calendly_webhook_signing_key: str | None = None
+    admin_telegram_user_ids: frozenset[int] = frozenset()
 
     @classmethod
     def load(cls, env_file: str | Path | None = None) -> "Config":
@@ -204,6 +205,22 @@ class Config:
         calendly_api_key = os.getenv("CALENDLY_API_KEY", "").strip() or None
         calendly_webhook_signing_key = os.getenv("CALENDLY_WEBHOOK_SIGNING_KEY", "").strip() or None
 
+        raw_admin_users = os.getenv("ADMIN_TELEGRAM_USER_IDS", "").strip()
+        admin_user_ids: set[int] = set()
+        if raw_admin_users:
+            for part in raw_admin_users.split(","):
+                part_clean = part.strip()
+                if not part_clean:
+                    continue
+                try:
+                    uid = int(part_clean)
+                    if uid > 0:
+                        admin_user_ids.add(uid)
+                except ValueError:
+                    pass
+        else:
+            admin_user_ids = set(allowed_user_ids)
+
         if errors:
             formatted_errors = "\n  - " + "\n  - ".join(errors)
             raise ConfigError(f"Configuration validation failed:{formatted_errors}")
@@ -242,4 +259,5 @@ class Config:
             calendly_redirect_uri=calendly_redirect_uri,
             calendly_api_key=calendly_api_key,
             calendly_webhook_signing_key=calendly_webhook_signing_key,
+            admin_telegram_user_ids=frozenset(admin_user_ids),
         )

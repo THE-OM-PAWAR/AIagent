@@ -50,6 +50,7 @@ class PermissionPolicy(BaseModel):
         requires_approval: bool = False,
         agent_type: str | None = None,
         allowed_agents: list[str] | None = None,
+        approval_granted: bool = False,
     ) -> tuple[bool, str | None]:
         """Verify whether an invocation is allowed under current policy.
 
@@ -74,7 +75,7 @@ class PermissionPolicy(BaseModel):
             )
 
         # 3. Explicit approval check
-        if requires_approval or tool_name in self.requires_approval_tools:
+        if (requires_approval or tool_name in self.requires_approval_tools) and not approval_granted:
             return (
                 False,
                 f"Tool '{tool_name}' requires human-in-the-loop approval before execution.",

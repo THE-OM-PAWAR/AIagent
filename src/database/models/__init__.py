@@ -7,7 +7,18 @@ from src.database.models.integration import IntegrationAuditLogModel, Integratio
 from src.database.models.memory import MemoryModel
 from src.database.models.outbox import MemoryOutboxModel
 from src.database.models.relationship import MemoryRelationshipModel
-from src.database.models.workflow import WorkflowModel
+from src.database.models.workflow import (
+    ApprovalStatus,
+    CatchUpPolicy,
+    ScheduleStatus,
+    WorkflowApprovalModel,
+    WorkflowModel,
+    WorkflowRunModel,
+    WorkflowScheduleModel,
+    WorkflowState,
+    WorkflowStepModel,
+    validate_workflow_state_transition,
+)
 
 __all__ = [
     "Base",
@@ -20,6 +31,15 @@ __all__ = [
     "ConversationModel",
     "MessageModel",
     "WorkflowModel",
+    "WorkflowStepModel",
+    "WorkflowRunModel",
+    "WorkflowApprovalModel",
+    "WorkflowScheduleModel",
+    "WorkflowState",
+    "ApprovalStatus",
+    "ScheduleStatus",
+    "CatchUpPolicy",
+    "validate_workflow_state_transition",
     "IntegrationCredentialModel",
     "IntegrationAuditLogModel",
 ]

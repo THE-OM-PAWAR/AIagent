@@ -255,25 +255,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_text("⛔ Access denied. You are not authorized to use this bot.")
         return
 
-    logger.info("Handling /help command from user_id=%s", update.effective_user.id if update.effective_user else "unknown")
-    help_text = (
-        "🤖 Personal AI Assistant Commands:\n\n"
-        "• /start  - Restart the assistant and begin a clean conversation\n"
-        "• /status - Display agent running status, uptime and environment\n"
-        "• /health - Check application, PostgreSQL, and Telegram connectivity\n"
-        "• /model  - View current Gemini model and LLM provider\n"
-        "• /clear  - Clear active conversation history and start fresh\n"
-        "• /reset  - Alias for /clear\n"
-        "• /integrations - View and manage external integrations (Web Search, etc.)\n"
-        "• /connect      - Connect an external service with an API key\n"
-        "• /disconnect   - Disconnect and revoke credentials for an integration\n"
-        "• /integration_status - Run diagnostic health checks on integrations\n"
-        "• /cancel       - Abort an ongoing connection prompt\n"
-        "• /help   - View this help message\n\n"
-        "Just send any text message to receive an AI response."
-    )
-    if update.message:
-        await update.message.reply_text(help_text)
+    user = update.effective_user
+    logger.info("Handling /help command from user_id=%s", user.id if user else "unknown")
+
+    config = context.bot_data.get("config") if hasattr(context, "bot_data") else None
+    from src.interfaces.telegram.commands import format_help_text, get_admin_user_ids
+
+    is_admin = bool(user and user.id in get_admin_user_ids(config))
+    help_text = format_help_text(is_admin=is_admin)
+
+    target = update.message or update.effective_message
+    if target:
+        await target.reply_text(help_text, parse_mode="Markdown")
 
 
 @asynccontextmanager
@@ -803,6 +796,528 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(
             "🧹 Active conversation context cleared! Previous messages have been archived and a new conversation started."
         )
+
+
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /memory command: inspect and manage saved long-term memories."""
+    if not is_authorized(update, context):
+        if update.message:
+            await update.message.reply_text("⛔ Access denied. You are not authorized to use this bot.")
+        return
+
+    user = update.effective_user
+    if not user:
+        return
+
+    logger.info("Handling /memory from user_id=%s", user.id)
+    args = context.args or []
+    subcommand = args[0].strip().lower() if args else "list"
+
+    orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
+    config: Config | None = context.bot_data.get("config")
+    db_url = getattr(config, "database_url", None) or (getattr(orchestrator, "database_url", None) if orchestrator else None)
+
+    if not db_url:
+        if update.message:
+            await update.message.reply_text("ℹ️ Memory storage is not configured (database URL missing).")
+        return
+
+    try:
+        from src.database.repositories.memory_repo import MemoryRepository
+        from src.database.session import get_async_session
+
+        async with get_async_session(db_url) as session:
+            repo = MemoryRepository(session)
+
+            if subcommand == "clear":
+                active_memories = await repo.list_active(user_id=user.id, limit=200)
+                if not active_memories:
+                    if update.message:
+                        await update.message.reply_text("ℹ️ You have no active saved memories to clear.")
+                    return
+                for mem in active_memories:
+                    await repo.set_status(mem.id, user.id, "archived")
+                if update.message:
+                    await update.message.reply_text(
+                        f"🧹 Successfully cleared {len(active_memories)} saved memories."
+                    )
+                return
+
+            # Default: list active memories
+            memories = await repo.list_active(user_id=user.id, limit=25)
+            if not memories:
+                text = (
+                    "🧠 *Saved Memories*\n\n"
+                    "No active memories saved yet.\n"
+                    "As we chat, I automatically remember key facts, projects, and personal preferences.\n\n"
+                    "💡 *Commands:*\n"
+                    "• `/memory` - View saved memories\n"
+                    "• `/memory clear` - Clear all saved memories"
+                )
+                if update.message:
+                    await update.message.reply_text(text, parse_mode="Markdown")
+                return
+
+            lines = [f"🧠 *Saved Memories ({len(memories)})*", ""]
+            for m in memories:
+                cat_badge = f"`[{m.category}]`" if m.category else "`[fact]`"
+                lines.append(f"• {cat_badge} {m.content}")
+
+            lines.append("")
+            lines.append("💡 _Memories are automatically retrieved to personalize your AI responses._")
+            lines.append("To clear all memories, use `/memory clear`.")
+
+            text = "\n".join(lines)
+            if update.message:
+                await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as exc:
+        logger.error("Error accessing memories for user %s: %s", user.id, exc)
+        if update.message:
+            await update.message.reply_text("⚠️ An error occurred while accessing memories.")
+
+
+async def tools_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /tools command: list registered agent tools and capabilities."""
+    if not is_authorized(update, context):
+        if update.message:
+            await update.message.reply_text("⛔ Access denied. You are not authorized to use this bot.")
+        return
+
+    user = update.effective_user
+    logger.info("Handling /tools command from user_id=%s", user.id if user else "unknown")
+
+    orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
+    registry = getattr(orchestrator, "tool_registry", None)
+
+    if not registry:
+        if update.message:
+            await update.message.reply_text("🛠 No tool registry configured.")
+        return
+
+    tool_list = registry.list_tools()
+    if not tool_list:
+        if update.message:
+            await update.message.reply_text("🛠 No tools are currently registered.")
+        return
+
+    lines = [f"🛠 *Available Agent Tools ({len(tool_list)})*", ""]
+
+    read_tools: list[str] = []
+    write_tools: list[str] = []
+    admin_tools: list[str] = []
+
+    for t in tool_list:
+        name = t.get("name", "unknown")
+        desc = t.get("description", "No description provided.")
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+        perm = t.get("permission", "read_only")
+        line = f"• `{name}`: _{desc}_"
+        if perm == "admin":
+            admin_tools.append(line)
+        elif perm == "write":
+            write_tools.append(line)
+        else:
+            read_tools.append(line)
+
+    if read_tools:
+        lines.append("*📖 Read-Only Tools:*")
+        lines.extend(read_tools)
+        lines.append("")
+
+    if write_tools:
+        lines.append("*✍️ Action & Write Tools:*")
+        lines.extend(write_tools)
+        lines.append("")
+
+    if admin_tools:
+        lines.append("*🛡️ Admin Tools:*")
+        lines.extend(admin_tools)
+        lines.append("")
+
+    lines.append("💡 _The agent automatically selects and executes tools based on your requests._")
+
+    text = "\n".join(lines).strip()
+    if update.message:
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def workflows_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /workflows command: view active workflows, trigger runs, cancel, or plan from natural language."""
+    if not is_authorized(update, context):
+        if update.message:
+            await update.message.reply_text("⛔ Access denied. You are not authorized to use this bot.")
+        return
+
+    user = update.effective_user
+    if not user:
+        return
+
+    logger.info("Handling /workflows command from user_id=%s", user.id)
+
+    workflow_engine = context.bot_data.get("workflow_engine")
+    orchestrator: AgentOrchestrator | None = context.bot_data.get("orchestrator")
+    if not workflow_engine and orchestrator:
+        workflow_engine = getattr(orchestrator, "workflow_engine", None)
+
+    if not workflow_engine:
+        if update.message:
+            await update.message.reply_text(
+                "⚙️ *Workflows*\n\n"
+                "No active workflows found.\n"
+                "Multi-step automated workflows will appear here when running.",
+                parse_mode="Markdown",
+            )
+        return
+
+    args = context.args or []
+    subcmd = args[0].lower().strip() if args else "list"
+
+    try:
+        # Subcommand: /workflows run <workflow_id>
+        if subcmd == "run" and len(args) >= 2:
+            wf_id = args[1].strip()
+            if update.message:
+                await update.message.reply_text(f"⏳ Executing workflow `{wf_id}`...", parse_mode="Markdown")
+            res = await workflow_engine.execute_workflow(workflow_id=wf_id, user_id=user.id, trigger_type="telegram")
+            st = res.get("status", "unknown").upper()
+            steps_done = res.get("current_step_index", 0)
+            tot = res.get("total_steps", 0)
+            err = res.get("error")
+            msg = (
+                f"⚙️ *Workflow Run Finished*\n\n"
+                f"• ID: `{wf_id}`\n"
+                f"• Status: *{st}*\n"
+                f"• Progress: {steps_done}/{tot} steps\n"
+            )
+            if err:
+                msg += f"• Error: `{err}`\n"
+            if update.message:
+                await update.message.reply_text(msg, parse_mode="Markdown")
+            return
+
+        # Subcommand: /workflows cancel <workflow_id>
+        if subcmd == "cancel" and len(args) >= 2:
+            wf_id = args[1].strip()
+            cancelled = await workflow_engine.cancel_workflow(workflow_id=wf_id, user_id=user.id)
+            if update.message:
+                await update.message.reply_text(
+                    f"🛑 Workflow `{wf_id}` {'cancelled successfully.' if cancelled else 'could not be cancelled.'}",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows status <workflow_id>
+        if subcmd == "status" and len(args) >= 2:
+            wf_id = args[1].strip()
+            status_data = await workflow_engine.get_status(workflow_id=wf_id, user_id=user.id)
+            steps_info = status_data.get("steps", [])
+            lines = [
+                f"⚙️ *Workflow Details: {status_data.get('name', wf_id)}*",
+                f"• ID: `{wf_id}`",
+                f"• Status: *{str(status_data.get('status')).upper()}*",
+                f"• Steps: {len(steps_info)}",
+                "",
+                "*Step Breakdown:*",
+            ]
+            for s in steps_info:
+                s_name = s.get("name", "step")
+                s_tool = s.get("tool_name", "")
+                s_st = s.get("status", "pending")
+                icon = "✅" if s_st == "completed" else ("⏭️" if s_st == "skipped" else "⏳")
+                lines.append(f"{icon} `{s_name}` ({s_tool}) - *{s_st}*")
+            if update.message:
+                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+
+        # Subcommand: /workflows pause <workflow_id>
+        if subcmd == "pause" and len(args) >= 2:
+            wf_id = args[1].strip()
+            paused = await workflow_engine.pause_workflow(workflow_id=wf_id, user_id=user.id)
+            if update.message:
+                await update.message.reply_text(
+                    f"⏸️ Workflow `{wf_id}` {'paused successfully.' if paused else 'could not be paused.'}",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows resume <workflow_id>
+        if subcmd == "resume" and len(args) >= 2:
+            wf_id = args[1].strip()
+            if update.message:
+                await update.message.reply_text(f"▶️ Resuming workflow `{wf_id}`...", parse_mode="Markdown")
+            res = await workflow_engine.execute_workflow(workflow_id=wf_id, user_id=user.id, trigger_type="telegram_resume")
+            st = res.get("status", "unknown").upper()
+            if update.message:
+                await update.message.reply_text(
+                    f"⚙️ Workflow `{wf_id}` execution resumed. Final status: *{st}*",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows approvals
+        if subcmd in ("approvals", "pending_approvals"):
+            appr_mgr = getattr(workflow_engine, "approval_manager", None)
+            if not appr_mgr:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Approval manager is not configured.")
+                return
+            pending = await appr_mgr.list_pending_approvals(user_id=user.id)
+            if not pending:
+                if update.message:
+                    await update.message.reply_text("✅ You have no pending action approvals.")
+                return
+            lines = [f"🛡️ *Pending Approvals ({len(pending)})*", ""]
+            for a in pending:
+                lines.append(f"• ID: `{a['approval_id']}`")
+                lines.append(f"  Tool: `{a['tool_name']}` (Step: `{a['step_name']}`)")
+                lines.append(f"  Action: _{a['action_summary']}_")
+                lines.append(f"  Expires: `{a['expires_at']}`")
+                lines.append("")
+            lines.append("💡 _To approve: `/workflows approve <approval_id>`_")
+            lines.append("💡 _To reject: `/workflows reject <approval_id>`_")
+            if update.message:
+                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+
+        # Subcommand: /workflows approve <approval_id>
+        if subcmd == "approve" and len(args) >= 2:
+            appr_id = args[1].strip()
+            appr_mgr = getattr(workflow_engine, "approval_manager", None)
+            if not appr_mgr:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Approval manager is not configured.")
+                return
+            if update.message:
+                await update.message.reply_text(f"⏳ Granting approval and resuming workflow for `{appr_id}`...", parse_mode="Markdown")
+            await appr_mgr.approve_request(approval_id=appr_id, user_id=user.id)
+            res = await workflow_engine.resume_approved_workflow(approval_id=appr_id, user_id=user.id)
+            st = res.get("status", "unknown").upper()
+            if update.message:
+                await update.message.reply_text(
+                    f"✅ Approval granted. Workflow execution resumed!\n• Final status: *{st}*",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows reject <approval_id>
+        if subcmd == "reject" and len(args) >= 2:
+            appr_id = args[1].strip()
+            reason = " ".join(args[2:]) if len(args) > 2 else "Rejected by user"
+            appr_mgr = getattr(workflow_engine, "approval_manager", None)
+            if not appr_mgr:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Approval manager is not configured.")
+                return
+            await appr_mgr.reject_request(approval_id=appr_id, user_id=user.id, resolution_notes=reason)
+            if update.message:
+                await update.message.reply_text(
+                    f"🛑 Approval `{appr_id}` rejected. Workflow step will not execute.",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows schedules
+        if subcmd in ("schedules", "list_schedules"):
+            scheduler = context.bot_data.get("workflow_scheduler") or getattr(workflow_engine, "workflow_scheduler", None)
+            if not scheduler:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Workflow scheduler is not configured.")
+                return
+            schedules = await scheduler.list_schedules(user_id=user.id)
+            if not schedules:
+                if update.message:
+                    await update.message.reply_text("ℹ️ You have no active or scheduled workflows.")
+                return
+            lines = [f"⏰ *Workflow Schedules ({len(schedules)})*", ""]
+            for s in schedules:
+                nxt = s.next_run_at.strftime('%Y-%m-%d %H:%M:%S UTC') if s.next_run_at else "None"
+                st_icon = "🟢" if s.status == "active" else ("⏸️" if s.status == "paused" else "⚪")
+                lines.append(f"{st_icon} *{s.name}* (`{s.id}`)")
+                lines.append(f"  Trigger: `{s.trigger_type}` | Next Run: `{nxt}` | Runs: {s.total_runs_count}")
+                lines.append("")
+            lines.append("💡 _To pause: `/workflows pause_schedule <id>`_")
+            lines.append("💡 _To resume: `/workflows resume_schedule <id>`_")
+            lines.append("💡 _To cancel: `/workflows cancel_schedule <id>`_")
+            if update.message:
+                await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+
+        # Subcommand: /workflows pause_schedule <schedule_id>
+        if subcmd == "pause_schedule" and len(args) >= 2:
+            sch_id = args[1].strip()
+            scheduler = context.bot_data.get("workflow_scheduler") or getattr(workflow_engine, "workflow_scheduler", None)
+            if not scheduler:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Workflow scheduler is not configured.")
+                return
+            paused = await scheduler.pause_schedule(sch_id, user_id=user.id)
+            if update.message:
+                await update.message.reply_text(
+                    f"⏸️ Schedule `{sch_id}` {'paused successfully.' if paused else 'could not be paused.'}",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows resume_schedule <schedule_id>
+        if subcmd == "resume_schedule" and len(args) >= 2:
+            sch_id = args[1].strip()
+            scheduler = context.bot_data.get("workflow_scheduler") or getattr(workflow_engine, "workflow_scheduler", None)
+            if not scheduler:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Workflow scheduler is not configured.")
+                return
+            resumed = await scheduler.resume_schedule(sch_id, user_id=user.id)
+            if update.message:
+                await update.message.reply_text(
+                    f"▶️ Schedule `{sch_id}` {'resumed successfully.' if resumed else 'could not be resumed.'}",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows cancel_schedule <schedule_id>
+        if subcmd == "cancel_schedule" and len(args) >= 2:
+            sch_id = args[1].strip()
+            scheduler = context.bot_data.get("workflow_scheduler") or getattr(workflow_engine, "workflow_scheduler", None)
+            if not scheduler:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Workflow scheduler is not configured.")
+                return
+            cancelled = await scheduler.cancel_schedule(sch_id, user_id=user.id)
+            if update.message:
+                await update.message.reply_text(
+                    f"🛑 Schedule `{sch_id}` {'cancelled successfully.' if cancelled else 'could not be cancelled.'}",
+                    parse_mode="Markdown",
+                )
+            return
+
+        # Subcommand: /workflows schedule <workflow_id> <trigger_type> <param...>
+        if subcmd == "schedule" and len(args) >= 3:
+            wf_id = args[1].strip()
+            trig_type = args[2].strip().lower()
+            param = args[3].strip() if len(args) > 3 else "3600"
+            scheduler = context.bot_data.get("workflow_scheduler") or getattr(workflow_engine, "workflow_scheduler", None)
+            if not scheduler:
+                if update.message:
+                    await update.message.reply_text("ℹ️ Workflow scheduler is not configured.")
+                return
+
+            cfg: dict[str, Any] = {}
+            if trig_type == "interval":
+                try:
+                    cfg = {"interval_seconds": int(param)}
+                except ValueError:
+                    cfg = {"interval_seconds": 3600}
+            elif trig_type == "daily":
+                cfg = {"time": param}
+            elif trig_type == "weekly":
+                cfg = {"time": param, "days_of_week": [0, 1, 2, 3, 4]}
+            elif trig_type == "cron":
+                cfg = {"cron_expression": " ".join(args[3:])}
+            else:
+                cfg = {"interval_seconds": 3600}
+
+            try:
+                sch = await scheduler.schedule_workflow(
+                    workflow_id=wf_id,
+                    user_id=user.id,
+                    name=f"Schedule for {wf_id[:8]}",
+                    trigger_type=trig_type,
+                    trigger_config=cfg,
+                )
+                if update.message:
+                    nxt_str = sch.next_run_at.strftime('%Y-%m-%d %H:%M:%S UTC') if sch.next_run_at else "None"
+                    await update.message.reply_text(
+                        f"⏰ *Workflow Scheduled Successfully*\n\n"
+                        f"• Schedule ID: `{sch.id}`\n"
+                        f"• Workflow: `{wf_id}`\n"
+                        f"• Trigger: `{trig_type}`\n"
+                        f"• Next Run: `{nxt_str}`",
+                        parse_mode="Markdown",
+                    )
+            except Exception as sched_err:
+                if update.message:
+                    await update.message.reply_text(f"⚠️ Failed to schedule workflow: {sched_err}")
+            return
+
+        # Subcommand: /workflows plan <request...> or /workflow <request...>
+        if subcmd in ("plan", "execute") or (subcmd not in ("list", "run", "cancel", "status", "pause", "resume", "approvals", "approve", "reject", "schedules", "pause_schedule", "resume_schedule", "cancel_schedule") and len(args) > 0):
+            planner = getattr(workflow_engine, "workflow_planner", None)
+            if not planner:
+                if update.message:
+                    await update.message.reply_text("⚠️ Automated workflow planner is not currently initialized.")
+                return
+
+            req_text = " ".join(args[1:]) if subcmd in ("plan", "execute") else " ".join(args)
+            if update.message:
+                await update.message.reply_text(
+                    f"🤖 *Planning and executing workflow for:*\n_{req_text}_\n\nPlease wait...",
+                    parse_mode="Markdown",
+                )
+
+            exec_result = await planner.plan_and_execute(user_id=user.id, natural_language_request=req_text)
+            wf_id = exec_result.get("workflow_id")
+            wf_name = exec_result.get("name")
+            run_exec = exec_result.get("execution", {})
+            st = run_exec.get("status", "completed").upper()
+            done_idx = run_exec.get("current_step_index", 0)
+            tot = run_exec.get("total_steps", 0)
+
+            reply_lines = [
+                f"✅ *Workflow Executed: {wf_name}*",
+                f"• Workflow ID: `{wf_id}`",
+                f"• Status: *{st}* ({done_idx}/{tot} steps completed)",
+                "",
+                "*Execution Summary:*",
+            ]
+            for s in exec_result.get("steps", []):
+                reply_lines.append(f"• `{s.get('name')}` using `{s.get('tool_name')}`")
+
+            if run_exec.get("error"):
+                reply_lines.append(f"\n⚠️ Error: `{run_exec.get('error')}`")
+
+            if update.message:
+                await update.message.reply_text("\n".join(reply_lines), parse_mode="Markdown")
+            return
+
+        # Default: list workflows
+        workflows = await workflow_engine.list_workflows(user_id=user.id)
+        if not workflows:
+            if update.message:
+                await update.message.reply_text(
+                    "⚙️ *Workflows*\n\n"
+                    "No active workflows found for your account.\n"
+                    "Multi-step workflows will appear here when scheduled or running.\n\n"
+                    "💡 *Usage:*\n"
+                    "• `/workflows` - List your workflows\n"
+                    "• `/workflow <goal>` - Generate and run a multi-step workflow from your request\n"
+                    "• `/workflows run <id>` - Run or resume a workflow\n"
+                    "• `/workflows status <id>` - Inspect workflow steps\n"
+                    "• `/workflows cancel <id>` - Cancel an active workflow",
+                    parse_mode="Markdown",
+                )
+            return
+
+        lines = [f"⚙️ *Active Workflows ({len(workflows)})*", ""]
+        for wf in workflows:
+            w_id = wf.get("workflow_id") or wf.get("id")
+            w_name = wf.get("name", "Automated Task")
+            w_status = str(wf.get("status", "unknown")).upper()
+            w_step = wf.get("current_step", wf.get("current_step_index", 0))
+            status_icon = "🟢" if w_status in ("RUNNING", "ACTIVE") else ("⏸️" if w_status == "PAUSED" else "⚪")
+            lines.append(f"{status_icon} *{w_name}* (`{w_id}`)")
+            lines.append(f"  Status: `{w_status}` | Step: {w_step}")
+            lines.append("")
+
+        lines.append("💡 _Use `/workflows status <id>` or `/workflows run <id>` to inspect or trigger._")
+
+        text = "\n".join(lines).strip()
+        if update.message:
+            await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as exc:
+        logger.error("Error in workflows command for user %s: %s", user.id, exc, exc_info=True)
+        if update.message:
+            await update.message.reply_text(f"⚠️ Error processing workflows command: {exc}")
 
 
 def format_uptime(start_time: float | None) -> str:
@@ -1373,16 +1888,20 @@ def register_handlers(application: Application) -> None:
     """Register all command and message handlers to the Telegram application."""
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("health", health_command))
-    application.add_handler(CommandHandler("model", model_command))
+    application.add_handler(CommandHandler("new", clear_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("reset", clear_command))
+    application.add_handler(CommandHandler("memory", memory_command))
+    application.add_handler(CommandHandler("tools", tools_command))
+    application.add_handler(CommandHandler(["workflows", "workflow"], workflows_command))
     application.add_handler(CommandHandler("integrations", integrations_command))
     application.add_handler(CommandHandler("connect", connect_command))
     application.add_handler(CommandHandler("disconnect", disconnect_command))
     application.add_handler(CommandHandler("integration_status", integration_status_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("health", health_command))
+    application.add_handler(CommandHandler("model", model_command))
     application.add_handler(CallbackQueryHandler(integration_callback_handler, pattern=r"^int_"))
     application.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)

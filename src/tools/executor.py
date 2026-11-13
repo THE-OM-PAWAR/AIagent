@@ -65,7 +65,7 @@ class ToolExecutor:
 
     def _store_and_return(self, result: ToolResult) -> ToolResult:
         """Store tool result in memoization cache and return it."""
-        if result.call_id:
+        if result.call_id and result.success:
             self._result_cache[result.call_id] = result
             if len(self._result_cache) > 250:
                 self._result_cache.pop(next(iter(self._result_cache)))
@@ -79,6 +79,7 @@ class ToolExecutor:
         user_id: int = 101,
         agent_type: str | None = None,
         execution_record: Any = None,
+        approval_granted: bool = False,
     ) -> ToolResult:
         """Execute a tool returning a structured ToolResult model."""
         actual_call_id = call_id or f"call_{int(time.time()*1000)}"
@@ -125,6 +126,7 @@ class ToolExecutor:
             requires_approval=definition.requires_approval,
             agent_type=agent_type,
             allowed_agents=definition.allowed_agents,
+            approval_granted=approval_granted,
         )
         if not is_allowed:
             err_msg = denial_reason or "Permission denied."

@@ -9,6 +9,7 @@ from telegram.request import HTTPXRequest
 from src.config import Config
 from src.core.orchestrator import AgentOrchestrator
 from src.intelligence.providers.gemini import GeminiClient
+from src.interfaces.telegram.commands import setup_bot_commands
 from src.interfaces.telegram.handlers import register_handlers
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,8 @@ def create_bot_app(
     db_client: Any = None,
     orchestrator: AgentOrchestrator | None = None,
     integration_registry: Any = None,
+    workflow_engine: Any = None,
+    workflow_scheduler: Any = None,
 ) -> Application:
     """Build and configure the Telegram bot Application with timeouts and dependencies.
 
@@ -29,6 +32,7 @@ def create_bot_app(
         db_client: Optional legacy db_client instance.
         orchestrator: Optional AgentOrchestrator instance.
         integration_registry: Optional IntegrationRegistry instance.
+        workflow_engine: Optional WorkflowEngine instance.
 
     Returns:
         Configured telegram.ext.Application ready for execution.
@@ -51,12 +55,22 @@ def create_bot_app(
             context_limit=config.conversation_history_limit,
         )
 
-    app = ApplicationBuilder().token(config.telegram_bot_token).request(request).build()
+    app = (
+        ApplicationBuilder()
+        .token(config.telegram_bot_token)
+        .request(request)
+        .post_init(setup_bot_commands)
+        .build()
+    )
     app.bot_data["config"] = config
     app.bot_data["gemini_client"] = gemini_client
     app.bot_data["orchestrator"] = orchestrator
     if integration_registry is not None:
         app.bot_data["integration_registry"] = integration_registry
+    if workflow_engine is not None:
+        app.bot_data["workflow_engine"] = workflow_engine
+    if workflow_scheduler is not None:
+        app.bot_data["workflow_scheduler"] = workflow_scheduler
     app.bot_data["start_time"] = time.time()
     register_handlers(app)
     return app
@@ -70,6 +84,8 @@ async def start_bot(app: Application) -> None:
     """
     logger.info("Initializing Telegram bot...")
     await app.initialize()
+    # Ensure commands are registered if post_init was bypassed
+    await setup_bot_commands(app)
     await app.start()
     if app.updater is not None:
         await app.updater.start_polling()
