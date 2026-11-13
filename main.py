@@ -1,5 +1,9 @@
 """Asynchronous application entry point for the Telegram AI Assistant."""
 
+import utils.net
+import utils.clients
+import utils.http_session
+import utils.transport
 import utils.session
 import asyncio
 import signal
