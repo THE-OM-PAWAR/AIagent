@@ -1,5 +1,6 @@
 """Gmail tool implementations exposing BaseTool interfaces."""
 
+import hashlib
 import logging
 from typing import Any
 
@@ -252,8 +253,18 @@ class GmailDraftTool(BaseTool):
         return await active_client.create_draft(to=to, subject=subject, body=body, thread_id=thread_id)
 
 
+# Idempotency cache of recently sent emails to prevent duplicate transmissions
+_SENT_EMAIL_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _get_send_idempotency_key(user_id: int | None, to: str, subject: str, body: str, thread_id: str | None) -> str:
+    """Generate a stable deterministic signature for an email transmission."""
+    normalized = f"{user_id or 0}:{to.strip().lower()}:{subject.strip()}:{body.strip()}:{thread_id or ''}"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 class GmailSendTool(BaseTool):
-    """Send an email via Gmail with mandatory explicit human-in-the-loop approval."""
+    """Send an email via Gmail with mandatory explicit human-in-the-loop approval and idempotency."""
 
     def __init__(
         self,
@@ -273,8 +284,9 @@ class GmailSendTool(BaseTool):
     def description(self) -> str:
         return (
             "Send an email via the user's Gmail account. CRITICAL: Sending an email requires explicit "
-            "user confirmation (confirmed=True). If confirmation has not been provided by the user, "
-            "first show the draft to the user and request their explicit approval."
+            "user confirmation (confirmed=True) and sensitive authorization. If confirmation has not been "
+            "provided by the user, first show the draft to the user and request their explicit approval, "
+            "or use 'gmail_create_draft' to safely stage the email without sending."
         )
 
     @property
@@ -299,6 +311,10 @@ class GmailSendTool(BaseTool):
                     "description": "Must be True ONLY when the human user has explicitly instructed to send this email.",
                     "default": False,
                 },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Optional client-supplied unique key to prevent duplicate email transmissions.",
+                },
             },
             "required": ["to", "subject", "body"],
         }
@@ -310,6 +326,7 @@ class GmailSendTool(BaseTool):
         body: str,
         thread_id: str | None = None,
         confirmed: bool = False,
+        idempotency_key: str | None = None,
         user_id: int | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -322,19 +339,63 @@ class GmailSendTool(BaseTool):
             return {
                 "status": "pending_approval",
                 "requires_approval": True,
+                "tool_name": "gmail_send_email",
                 "message": (
                     f"⚠️ Sending email to '{to}' requires explicit user confirmation. "
-                    "Please present this draft to the user and ask them to confirm before proceeding."
+                    "The email has NOT been sent. Please present this draft to the user and ask them to confirm before proceeding. "
+                    "Alternatively, you may call 'gmail_create_draft' to save this safely into drafts."
                 ),
                 "draft_details": {
                     "to": to,
                     "subject": subject,
                     "body_preview": body[:300] + ("..." if len(body) > 300 else ""),
                 },
+                "safe_alternative": "gmail_create_draft",
+            }
+
+        # Enforce idempotency: prevent duplicate send on retries or identical calls
+        key = idempotency_key or _get_send_idempotency_key(user_id, to, subject, body, thread_id)
+        if key in _SENT_EMAIL_CACHE:
+            cached = _SENT_EMAIL_CACHE[key]
+            logger.warning(
+                "GmailSendTool: duplicate send prevented by idempotency guard for key=%s to=%s (existing message_id=%s)",
+                key[:12],
+                to,
+                cached.get("message_id"),
+            )
+            return {
+                "status": "sent",
+                "already_sent": True,
+                "message_id": cached.get("message_id"),
+                "thread_id": cached.get("thread_id"),
+                "to": to,
+                "subject": subject,
+                "note": "Duplicate email send prevented by idempotency guard; email was previously sent successfully.",
             }
 
         result = await active_client.send_email(to=to, subject=subject, body=body, thread_id=thread_id)
-        logger.info("Gmail: email sent to '%s' (message_id=%s, user_id=%s)", to, result.get("message_id"), user_id)
+
+        # Outcome verification: confirm message was accepted with a valid message_id
+        msg_id = result.get("message_id")
+        if not msg_id:
+            logger.error("GmailSendTool: send operation failed outcome verification: missing message_id from API")
+            return {
+                "status": "error",
+                "error": "Gmail API send outcome verification failed: no valid message ID returned.",
+            }
+
+        # Store in idempotency cache
+        _SENT_EMAIL_CACHE[key] = {
+            "message_id": msg_id,
+            "thread_id": result.get("thread_id"),
+            "to": to,
+            "subject": subject,
+            "sent_at": result.get("sent_at"),
+        }
+        if len(_SENT_EMAIL_CACHE) > 500:
+            _SENT_EMAIL_CACHE.pop(next(iter(_SENT_EMAIL_CACHE)))
+
+        logger.info("Gmail: email sent to '%s' (message_id=%s, user_id=%s)", to, msg_id, user_id)
         return result
 
 

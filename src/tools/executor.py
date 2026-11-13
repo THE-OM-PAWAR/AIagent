@@ -51,12 +51,14 @@ class ToolExecutor:
         default_timeout: float = 30.0,
         max_output_chars: int = 25000,
         execution_tracker: Any = None,
+        approval_manager: Any = None,
     ) -> None:
         self.registry = registry
         self.permission_policy = permission_policy or PermissionPolicy()
         self.default_timeout = default_timeout
         self.max_output_chars = max_output_chars
         self.execution_tracker = execution_tracker
+        self.approval_manager = approval_manager
         self._result_cache: dict[str, ToolResult] = {}
 
     def clear_cache(self) -> None:
@@ -80,6 +82,7 @@ class ToolExecutor:
         agent_type: str | None = None,
         execution_record: Any = None,
         approval_granted: bool = False,
+        approval_id: str | None = None,
     ) -> ToolResult:
         """Execute a tool returning a structured ToolResult model."""
         actual_call_id = call_id or f"call_{int(time.time()*1000)}"
@@ -99,6 +102,78 @@ class ToolExecutor:
             user_id,
             masked_args,
         )
+
+        # Validate persisted approval if approval_id is supplied
+        if approval_id and self.approval_manager:
+            try:
+                appr = await self.approval_manager.get_approval(approval_id)
+                if not appr:
+                    err_msg = f"Approval request '{approval_id}' not found."
+                    logger.warning("ToolExecutor: %s", err_msg)
+                    return self._store_and_return(ToolResult(
+                        call_id=actual_call_id,
+                        tool_name=tool_name,
+                        success=False,
+                        error=err_msg,
+                    ))
+
+                if appr.get("status") != "approved":
+                    err_msg = f"Approval request '{approval_id}' is not in approved state (status: '{appr.get('status')}')."
+                    logger.warning("ToolExecutor: %s", err_msg)
+                    return self._store_and_return(ToolResult(
+                        call_id=actual_call_id,
+                        tool_name=tool_name,
+                        success=False,
+                        error=err_msg,
+                    ))
+
+                # Validate approval ownership
+                appr_user = appr.get("requested_by_user_id")
+                user_perm = self.permission_policy.get_user_permission(user_id)
+                if appr_user != user_id and user_perm != ToolPermission.ADMIN:
+                    err_msg = f"User {user_id} is not authorized to execute approval request '{approval_id}' owned by {appr_user}."
+                    logger.warning("ToolExecutor: %s", err_msg)
+                    return self._store_and_return(ToolResult(
+                        call_id=actual_call_id,
+                        tool_name=tool_name,
+                        success=False,
+                        error=err_msg,
+                    ))
+
+                # Validate tool identity
+                if appr.get("tool_name") != tool_name:
+                    err_msg = f"Approval request '{approval_id}' was issued for tool '{appr.get('tool_name')}', not '{tool_name}'."
+                    logger.warning("ToolExecutor: %s", err_msg)
+                    return self._store_and_return(ToolResult(
+                        call_id=actual_call_id,
+                        tool_name=tool_name,
+                        success=False,
+                        error=err_msg,
+                    ))
+
+                # Validate action identity (key arguments match approved arguments)
+                appr_args = appr.get("action_arguments", {})
+                for key in ("to", "subject", "body"):
+                    if key in appr_args and key in arguments and appr_args[key] != arguments[key]:
+                        err_msg = f"Argument mismatch for '{key}': does not match approved value in approval '{approval_id}'."
+                        logger.warning("ToolExecutor: %s", err_msg)
+                        return self._store_and_return(ToolResult(
+                            call_id=actual_call_id,
+                            tool_name=tool_name,
+                            success=False,
+                            error=err_msg,
+                        ))
+
+                approval_granted = True
+            except Exception as exc:
+                err_msg = f"Failed to validate approval '{approval_id}': {exc}"
+                logger.warning("ToolExecutor: %s", err_msg)
+                return self._store_and_return(ToolResult(
+                    call_id=actual_call_id,
+                    tool_name=tool_name,
+                    success=False,
+                    error=err_msg,
+                ))
 
         # 1. Unknown tool rejection
         definition = self.registry.get_definition(tool_name)

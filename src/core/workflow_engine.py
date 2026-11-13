@@ -317,6 +317,7 @@ class WorkflowEngine:
             user_id=user_id,
             run_id_override=appr["run_id"],
             approved_step=appr["step_name"],
+            approval_id=approval_id,
             trigger_type="approval_resumed",
         )
 
@@ -330,6 +331,7 @@ class WorkflowEngine:
         approved_step: str | None = None,
         idempotency_key: str | None = None,
         schedule_id: str | None = None,
+        approval_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute or resume workflow with lease concurrency, idempotency, bounded retries, and checkpoints."""
         worker_token = f"worker_{uuid.uuid4().hex[:12]}"
@@ -526,6 +528,7 @@ class WorkflowEngine:
                                 user_id=user_id,
                                 call_id=step_call_id,
                                 approval_granted=approval_granted,
+                                approval_id=approval_id if approval_granted else None,
                             ),
                             timeout=float(timeout_sec),
                         )

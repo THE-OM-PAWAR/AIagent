@@ -36,11 +36,27 @@ class PermissionPolicy(BaseModel):
 
     default_user_permission: ToolPermission = ToolPermission.WRITE
     user_permissions: dict[int, ToolPermission] = Field(default_factory=dict)
+    admin_user_ids: set[int] = Field(default_factory=set)
+    sensitive_user_ids: set[int] = Field(default_factory=set)
     requires_approval_tools: set[str] = Field(default_factory=set)
+
+    def grant_user_permission(self, user_id: int, permission: ToolPermission) -> None:
+        """Grant a specific permission tier to a user."""
+        self.user_permissions[user_id] = permission
+
+    def revoke_user_permission(self, user_id: int) -> None:
+        """Revoke an explicit user permission override."""
+        self.user_permissions.pop(user_id, None)
 
     def get_user_permission(self, user_id: int) -> ToolPermission:
         """Get the granted permission level for a user ID."""
-        return self.user_permissions.get(user_id, self.default_user_permission)
+        if user_id in self.admin_user_ids:
+            return ToolPermission.ADMIN
+        if user_id in self.user_permissions:
+            return self.user_permissions[user_id]
+        if user_id in self.sensitive_user_ids:
+            return ToolPermission.SENSITIVE
+        return self.default_user_permission
 
     def check_permission(
         self,
@@ -69,9 +85,12 @@ class PermissionPolicy(BaseModel):
         # 2. User hierarchical permission check
         user_perm = self.get_user_permission(user_id)
         if not user_perm.satisfies(required_permission):
+            advice = ""
+            if tool_name == "gmail_send_email":
+                advice = " Please use 'gmail_create_draft' to prepare a safe draft instead."
             return (
                 False,
-                f"User {user_id} with permission '{user_perm.value}' cannot execute tool '{tool_name}' requiring '{required_permission.value}'.",
+                f"User {user_id} with permission '{user_perm.value}' cannot execute tool '{tool_name}' requiring '{required_permission.value}'.{advice}",
             )
 
         # 3. Explicit approval check

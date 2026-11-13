@@ -11,6 +11,7 @@ from src.database.session import close_engine, get_engine
 from src.intelligence.providers.gemini import GeminiClient
 from src.interfaces.telegram import create_bot_app, start_bot, stop_bot
 from src.logger import get_logger, setup_logging
+from src.tools.permissions import PermissionPolicy
 
 logger = get_logger("app")
 
@@ -107,7 +108,12 @@ async def main() -> None:
             logger.warning("MemoryManager initialization skipped (%s). Continuing in standard mode.", exc)
             memory_manager = None
 
-    # 5. Initialize Agent Orchestration Layer
+    # 5. Initialize Security Policy & Agent Orchestration Layer
+    permission_policy = PermissionPolicy(
+        admin_user_ids=set(config.admin_telegram_user_ids),
+        sensitive_user_ids=set(config.allowed_telegram_user_ids),
+    )
+
     orchestrator = AgentOrchestrator(
         gemini_client=gemini_client,
         database_url=config.database_url,
@@ -115,6 +121,7 @@ async def main() -> None:
         context_limit=config.conversation_history_limit,
         system_prompt=config.gemini_system_instruction,
         model_name=config.gemini_model,
+        permission_policy=permission_policy,
     )
 
     # 5b. Initialize Workflow Engine & Persistent State
@@ -135,7 +142,10 @@ async def main() -> None:
                 await conn.run_sync(Base.metadata.create_all)
 
             session_factory = get_sessionmaker(config.database_url)
-            wf_executor = ToolExecutor(orchestrator.tool_registry)
+            wf_executor = ToolExecutor(
+                registry=orchestrator.tool_registry,
+                permission_policy=orchestrator.permission_policy,
+            )
             wf_manager = WorkflowManager(
                 session_factory=session_factory,
                 tool_registry=orchestrator.tool_registry,
@@ -146,6 +156,10 @@ async def main() -> None:
                 tool_executor=wf_executor,
                 workflow_manager=wf_manager,
             )
+            # Wire ApprovalManager into tool executors for approval verification
+            wf_executor.approval_manager = workflow_engine.approval_manager
+            orchestrator.tool_executor.approval_manager = workflow_engine.approval_manager
+
             wf_planner = WorkflowPlanner(
                 workflow_manager=wf_manager,
                 workflow_engine=workflow_engine,
