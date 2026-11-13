@@ -25,7 +25,8 @@ wheels/
 env/
 venv/
 ENV/
-
+.env
+.env.local
 # Environment Variables & Secrets
 !.env.example
 *.pem
